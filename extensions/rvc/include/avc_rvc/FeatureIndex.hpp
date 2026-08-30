@@ -28,7 +28,12 @@ public:
 private:
     FeatureIndex() = default;
 
+#ifdef _WIN32
+    void *file_handle_ = nullptr;
+    void *mapping_handle_ = nullptr;
+#else
     int fd_ = -1;
+#endif
     void *mapping_ = nullptr;
     std::size_t mapping_size_ = 0;
     std::uint32_t dimension_ = 0;

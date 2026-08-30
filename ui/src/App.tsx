@@ -11,6 +11,7 @@ import {
 import '@xyflow/react/dist/style.css'
 
 import { subscribeTelemetry } from './api'
+import { extensionTranslationKey, resolveSupportedLanguage, supportedLanguages } from './i18n'
 import { useStore } from './store'
 import { AvcNode } from './nodes/AvcNode'
 import { Palette } from './panel/Palette'
@@ -22,6 +23,25 @@ import { StatusBar } from './panel/StatusBar'
 import { colorOf } from './theme'
 
 const nodeTypes: NodeTypes = { avc: AvcNode }
+
+function LanguagePicker() {
+  const { i18n, t } = useTranslation()
+  const language = resolveSupportedLanguage(i18n.resolvedLanguage ?? i18n.language)
+
+  return (
+    <select
+      className="language-picker"
+      value={language}
+      aria-label={t('app.language')}
+      title={t('app.language')}
+      onChange={(event) => void i18n.changeLanguage(event.target.value)}
+    >
+      {Object.entries(supportedLanguages).map(([code, label]) => (
+        <option key={code} value={code}>{label}</option>
+      ))}
+    </select>
+  )
+}
 
 function Nav() {
   const view = useStore((s) => s.view)
@@ -49,6 +69,7 @@ function Nav() {
 function Presets() {
   const presets = useStore((s) => s.presets)
   const extensionPresets = useStore((s) => s.extensionPresets)
+  const extensions = useStore((s) => s.extensions)
   const savePreset = useStore((s) => s.savePreset)
   const loadPreset = useStore((s) => s.loadPreset)
   const loadExtensionPreset = useStore((s) => s.loadExtensionPreset)
@@ -73,11 +94,20 @@ function Presets() {
             {p}
           </option>
         ))}
-        {extensionPresets.map((p) => (
-          <option key={`${p.key}/${p.name}`} value={`ext\u0000${p.key}\u0000${p.name}`}>
-            {p.extension} · {p.name}
-          </option>
-        ))}
+        {extensionPresets.map((p) => {
+          const extension = extensions.find((entry) => entry.id === p.extension)
+          const extensionName = t(extensionTranslationKey(p.extension, 'name'), {
+            defaultValue: extension?.name || p.extension,
+          })
+          const presetName = t(extensionTranslationKey(p.extension, `presets.${p.name}`), {
+            defaultValue: p.name,
+          })
+          return (
+            <option key={`${p.key}/${p.name}`} value={`ext\u0000${p.key}\u0000${p.name}`}>
+              {extensionName} · {presetName}
+            </option>
+          )
+        })}
       </select>
       <input
         value={name}
@@ -176,6 +206,7 @@ export default function App() {
         <Nav />
         {view === 'editor' && <Presets />}
         <div className="spacer" />
+        <LanguagePicker />
         {engine !== undefined && engine !== 'up' && (
           <span className="banner">{t(`app.engine.${engine}`)}</span>
         )}

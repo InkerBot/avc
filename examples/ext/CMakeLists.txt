@@ -9,7 +9,9 @@ set_target_properties(avc_example_ext PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/extensions)
 
 target_compile_options(avc_example_ext PRIVATE ${AVC_WARNINGS})
-if(NOT MSVC)
+if(MSVC)
+    target_compile_options(avc_example_ext PRIVATE /utf-8)
+else()
     target_compile_options(avc_example_ext PRIVATE
         -fvisibility=hidden -fvisibility-inlines-hidden)
 endif()

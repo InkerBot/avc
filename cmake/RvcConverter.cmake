@@ -5,14 +5,25 @@ set(_avc_rvc_python_release "20260718")
 set(_avc_rvc_python_version "3.10.20")
 
 string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _avc_rvc_converter_arch)
-if(_avc_rvc_converter_arch MATCHES "^(x86_64|amd64)$")
+if(WIN32 AND _avc_rvc_converter_arch MATCHES "^(x86_64|amd64)$")
     set(_avc_rvc_python_arch "x86_64")
+    set(_avc_rvc_python_target "x86_64-pc-windows-msvc")
+    set(_avc_rvc_python_sha256 "cf7eae46857d3e4ece9f14711e477566069fbd4cf7874658132284e515d242f8")
+    set(_avc_rvc_python_executable "${_avc_rvc_converter_root}/python/python.exe")
+    set(_avc_rvc_torch "torch==2.12.1")
+    set(_avc_rvc_torch_index "https://download.pytorch.org/whl/cpu")
+elseif(_avc_rvc_converter_arch MATCHES "^(x86_64|amd64)$")
+    set(_avc_rvc_python_arch "x86_64")
+    set(_avc_rvc_python_target "x86_64-unknown-linux-gnu")
     set(_avc_rvc_python_sha256 "3d71c71aad818dab1776dca94f76667d88126e06623d916a21371117d17d21e7")
+    set(_avc_rvc_python_executable "${_avc_rvc_converter_root}/python/bin/python3")
     set(_avc_rvc_torch "torch==2.12.1")
     set(_avc_rvc_torch_index "https://download.pytorch.org/whl/cpu")
 elseif(_avc_rvc_converter_arch MATCHES "^(aarch64|arm64)$")
     set(_avc_rvc_python_arch "aarch64")
+    set(_avc_rvc_python_target "aarch64-unknown-linux-gnu")
     set(_avc_rvc_python_sha256 "7590cad6d464d9cfc7f30ec15a6ab919113fa0d265406882f8605a79d3a43bfa")
+    set(_avc_rvc_python_executable "${_avc_rvc_converter_root}/python/bin/python3")
     set(_avc_rvc_torch "torch==2.12.1")
     set(_avc_rvc_torch_index "https://pypi.org/simple")
 else()
@@ -20,7 +31,7 @@ else()
 endif()
 
 set(_avc_rvc_python_archive
-    "cpython-${_avc_rvc_python_version}+${_avc_rvc_python_release}-${_avc_rvc_python_arch}-unknown-linux-gnu-install_only_stripped.tar.gz")
+    "cpython-${_avc_rvc_python_version}+${_avc_rvc_python_release}-${_avc_rvc_python_target}-install_only_stripped.tar.gz")
 FetchContent_Declare(avc_rvc_python
     URL "https://github.com/astral-sh/python-build-standalone/releases/download/${_avc_rvc_python_release}/${_avc_rvc_python_archive}"
     URL_HASH "SHA256=${_avc_rvc_python_sha256}"
@@ -71,10 +82,21 @@ avc_rvc_download_model(rmvpe.onnx
     "9151c489d8c09a2c31c035e5eb24651c18e9f05cc04c4cc1afc5086c9bce7d1e")
 
 file(MAKE_DIRECTORY "${_avc_rvc_converter_root}")
-configure_file("${CMAKE_SOURCE_DIR}/tools/rvc/avc-rvc-convert.in"
-    "${_avc_rvc_converter_root}/avc-rvc-convert" @ONLY)
-file(CHMOD "${_avc_rvc_converter_root}/avc-rvc-convert"
-    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+if(WIN32)
+    set_target_properties(avc_rvc_converter_launcher PROPERTIES
+        OUTPUT_NAME "avc-rvc-convert"
+        RUNTIME_OUTPUT_DIRECTORY "${_avc_rvc_converter_root}")
+    foreach(config Debug Release RelWithDebInfo MinSizeRel)
+        string(TOUPPER "${config}" config_upper)
+        set_target_properties(avc_rvc_converter_launcher PROPERTIES
+            "RUNTIME_OUTPUT_DIRECTORY_${config_upper}" "${_avc_rvc_converter_root}")
+    endforeach()
+else()
+    configure_file("${CMAKE_SOURCE_DIR}/tools/rvc/avc-rvc-convert.in"
+        "${_avc_rvc_converter_root}/avc-rvc-convert" @ONLY)
+    file(CHMOD "${_avc_rvc_converter_root}/avc-rvc-convert"
+        PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+endif()
 
 set(_avc_rvc_packages_stamp "${_avc_rvc_converter_root}/.packages-ready")
 set(_avc_rvc_packages
@@ -100,7 +122,7 @@ add_custom_command(
     OUTPUT "${_avc_rvc_packages_stamp}"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${avc_rvc_python_SOURCE_DIR}" "${_avc_rvc_converter_root}/python"
-    COMMAND "${_avc_rvc_converter_root}/python/bin/python3" -m pip install
+    COMMAND "${_avc_rvc_python_executable}" -m pip install
             --disable-pip-version-check --no-cache-dir --upgrade --only-binary=:all:
             --target "${_avc_rvc_converter_root}/site-packages"
             --index-url "${_avc_rvc_torch_index}"
@@ -127,10 +149,12 @@ add_custom_command(
     COMMAND "${CMAKE_COMMAND}" -E touch "${_avc_rvc_converter_stamp}"
     DEPENDS "${_avc_rvc_packages_stamp}"
             "${CMAKE_SOURCE_DIR}/tools/rvc/convert_pth.py"
-            "${CMAKE_SOURCE_DIR}/tools/rvc/avc-rvc-convert.in"
     COMMENT "Installing the RVC PTH converter entry point"
     VERBATIM)
 add_custom_target(avc_rvc_converter ALL DEPENDS "${_avc_rvc_converter_stamp}")
+if(WIN32)
+    add_dependencies(avc_rvc_converter avc_rvc_converter_launcher)
+endif()
 add_dependencies(avc_rvc avc_rvc_converter)
 
 set(_avc_rvc_install_root "${CMAKE_INSTALL_FULL_LIBEXECDIR}/avc/rvc-converter")

@@ -21,6 +21,15 @@ using nlohmann::json;
 
 #ifdef _WIN32
 constexpr const char *kLibrarySuffix = ".dll";
+
+std::filesystem::path executableDirectory()
+{
+    std::wstring path(32768, L'\0');
+    const DWORD size = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (size == 0 || size >= path.size()) return {};
+    path.resize(size);
+    return std::filesystem::path(path).parent_path();
+}
 #else
 constexpr const char *kLibrarySuffix = ".so";
 constexpr const char *kSystemDirectory = "/usr/lib/avc/extensions";
@@ -180,6 +189,8 @@ void ExtensionStore::rescan()
     }
     dirs_.push_back(userDirectory());
 #ifdef _WIN32
+    const std::filesystem::path executable_dir = executableDirectory();
+    if (!executable_dir.empty()) dirs_.push_back(executable_dir / "extensions");
     if (const char *program_files = std::getenv("ProgramFiles"); program_files != nullptr) {
         dirs_.emplace_back(std::filesystem::path(program_files) / "avc" / "extensions");
     }
@@ -417,6 +428,50 @@ bool ExtensionStore::install(const std::string &filename, const std::string &byt
     save();
     rescan();
     spdlog::info("installed {} (disabled until it is switched on)", target.string());
+    return true;
+}
+
+bool ExtensionStore::installFile(const std::filesystem::path &source, std::string &error)
+{
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(source, ec)) {
+        error = "not an extension file: " + source.string();
+        return false;
+    }
+
+    const std::string filename = source.filename().string();
+    if (!validFilename(filename)) {
+        error = std::string("choose a file named like 'thing") + kLibrarySuffix
+                + "', with letters, digits, '.', '-' and '_'";
+        return false;
+    }
+
+    const std::filesystem::path target = userDirectory() / filename;
+    std::filesystem::create_directories(userDirectory(), ec);
+    if (ec) {
+        error = "cannot create " + userDirectory().string() + ": " + ec.message();
+        return false;
+    }
+
+    ec.clear();
+    const bool already_managed = std::filesystem::equivalent(source, target, ec);
+    if (!already_managed) {
+        ec.clear();
+        std::filesystem::copy_file(source, target,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            error = "cannot install " + source.string() + ": " + ec.message();
+            return false;
+        }
+    }
+
+    Record &record = records_[target.stem().string()];
+    record.enabled = false;
+    record.disabled_reason = "user";
+    save();
+    rescan();
+    spdlog::info("installed {} from {} (disabled until it is switched on)", target.string(),
+                 source.string());
     return true;
 }
 

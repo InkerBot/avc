@@ -6,15 +6,22 @@ import { useStore } from '../store'
 import type { Extension, ExtensionSetting } from '../api'
 import { ExtensionComponent } from '../extensions/ExtensionComponent'
 import { useExtensionContext } from '../extensions/context'
+import { extensionTranslationKey } from '../i18n'
 
 function settingLabel(t: TFunction, id: string, setting: ExtensionSetting): string {
-  return t(`extensionSettings.${id}.${setting.key}.name`, {
+  return t([
+    extensionTranslationKey(id, `settings.${setting.key}.name`),
+    `extensionSettings.${id}.${setting.key}.name`,
+  ], {
     defaultValue: setting.label || setting.key.replace(/_/g, ' '),
   })
 }
 
 function settingHint(t: TFunction, id: string, setting: ExtensionSetting): string {
-  return t(`extensionSettings.${id}.${setting.key}.description`, {
+  return t([
+    extensionTranslationKey(id, `settings.${setting.key}.description`),
+    `extensionSettings.${id}.${setting.key}.description`,
+  ], {
     defaultValue: setting.description ?? '',
   })
 }
@@ -57,7 +64,10 @@ function Field({
         <select value={value} onChange={(e) => onChange(e.target.value)}>
           {setting.values.map((option) => (
             <option key={option} value={option}>
-              {t(`extensionSettings.${id}.${setting.key}.values.${option}`, {
+              {t([
+                extensionTranslationKey(id, `settings.${setting.key}.values.${option}`),
+                `extensionSettings.${id}.${setting.key}.values.${option}`,
+              ], {
                 defaultValue: option,
               })}
             </option>
@@ -114,6 +124,12 @@ function GenericExtensionConfig({ extension }: { extension?: Extension }) {
   const busy = useStore((s) => s.extensionsBusy)
   const save = useStore((s) => s.saveExtensionSettings)
   const [draft, setDraft] = useState<Record<string, string>>({})
+  const extensionId = extension?.id || extension?.key || ''
+  const extensionName = extension
+    ? t(extensionTranslationKey(extensionId, 'name'), {
+        defaultValue: extension.name || extension.key,
+      })
+    : ''
 
   useEffect(() => {
     setDraft(extension ? initial(extension) : {})
@@ -134,7 +150,7 @@ function GenericExtensionConfig({ extension }: { extension?: Extension }) {
         <h2 className="panel__title">{t('extensions.settingsTitle')}</h2>
         <p className="hint">
           {extension.state === 'loaded'
-            ? t('extensions.settingsNone', { name: extension.name || extension.key })
+            ? t('extensions.settingsNone', { name: extensionName })
             : t('extensions.settingsUnknown')}
         </p>
       </div>
@@ -149,7 +165,7 @@ function GenericExtensionConfig({ extension }: { extension?: Extension }) {
     <div className="panel">
       <h2 className="panel__title">{t('extensions.settingsTitle')}</h2>
       <div className="inspector__head">
-        <strong>{extension.name || extension.key}</strong>
+        <strong>{extensionName}</strong>
         <code>{extension.id}</code>
       </div>
 

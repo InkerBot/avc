@@ -1470,6 +1470,39 @@ TEST(PortTypes, CarriesTextFromOneNodeToTheNext)
     EXPECT_FLOAT_EQ(block.output(0), 7.0F);
 }
 
+TEST(TextNode, ExposesOnlyChangedSnapshotsThroughTheGraphHost)
+{
+    GraphSpec spec;
+    spec.nodes = {input("mic"), node("ruler", "test_text_ruler"),
+                  node("caption", "text")};
+    connect(spec, "mic", "out", "ruler", "in");
+    connect(spec, "ruler", "out", "caption", "in");
+
+    FakeBinder binder;
+    GraphHost host(CompileEnv{}, &binder);
+    std::string error;
+    ASSERT_TRUE(host.apply(spec, error)) << error;
+
+    Block block(1, 0, 64);
+    block.fillInput(0, 2.0F);
+    host.process(block.context());
+
+    auto readings = host.texts();
+    ASSERT_EQ(readings.size(), 1U);
+    EXPECT_EQ(readings[0].node, "caption");
+    EXPECT_EQ(readings[0].text, "xx");
+
+    host.process(block.context());
+    EXPECT_TRUE(host.texts().empty()) << "unchanged snapshots do not bloat telemetry";
+
+    block.fillInput(0, 9.0F);
+    host.process(block.context());
+    readings = host.texts();
+    ASSERT_EQ(readings.size(), 1U);
+    EXPECT_EQ(readings[0].text, "xxxxxxxxx");
+    host.shutdown();
+}
+
 TEST(PortTypes, KeepsTextAndAudioOutOfEachOthersBuffers)
 {
     GraphSpec spec;
@@ -1549,7 +1582,11 @@ TEST(PortTypes, PacesADomainThatHasNothingButValuesOnIt)
 
 TEST(GraphSpec, RoundTripsThroughJson)
 {
-    const GraphSpec original = passthrough(-3.0F);
+    GraphSpec original = passthrough(-3.0F);
+    original.nodes[1].ui_x = 120.0F;
+    original.nodes[1].ui_y = 80.0F;
+    original.nodes[1].ui_width = 320.0F;
+    original.nodes[1].ui_height = 180.0F;
     std::string error;
     const auto parsed = GraphSpec::parse(original.dump(), error);
     ASSERT_TRUE(parsed.has_value()) << error;
@@ -1557,6 +1594,10 @@ TEST(GraphSpec, RoundTripsThroughJson)
     ASSERT_EQ(parsed->nodes.size(), original.nodes.size());
     EXPECT_EQ(parsed->nodes[1].type, "gain");
     EXPECT_NEAR(parsed->nodes[1].params.at("gain_db"), -3.0F, 1e-5F);
+    EXPECT_FLOAT_EQ(parsed->nodes[1].ui_x, 120.0F);
+    EXPECT_FLOAT_EQ(parsed->nodes[1].ui_y, 80.0F);
+    EXPECT_FLOAT_EQ(parsed->nodes[1].ui_width, 320.0F);
+    EXPECT_FLOAT_EQ(parsed->nodes[1].ui_height, 180.0F);
     ASSERT_EQ(parsed->edges.size(), original.edges.size());
 
     auto graph = GraphCompiler::compile(*parsed, envFor(*parsed), nullptr, error);
@@ -1576,6 +1617,8 @@ TEST(GraphSpec, RejectsWrongFieldTypesWithoutThrowing)
              R"({"version":"one","nodes":[]})",
              R"({"nodes":[{"id":12,"type":"gain"}]})",
              R"({"nodes":[{"id":"g","type":"gain","params":[]}]})",
+             R"({"nodes":[{"id":"g","type":"gain","ui":{"width":0}}]})",
+             R"({"nodes":[{"id":"g","type":"gain","ui":{"height":"large"}}]})",
              R"({"nodes":[],"edges":[{"from":{"node":"a","port":{}},"to":{}}]})",
              R"({"nodes":[],"domains":{"cold":{"block":-1}}})",
          }) {

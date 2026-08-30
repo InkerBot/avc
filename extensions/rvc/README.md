@@ -1,4 +1,4 @@
-# AVC native RVC extension (Linux)
+# AVC native RVC extension (Linux and Windows)
 
 This extension runs an RVC deployment package directly through ONNX Runtime's
 C++ API. Inference never loads or spawns Python. A self-contained, daemon-side
@@ -19,10 +19,16 @@ cmake -S . -B build-rvc -DAVC_BUILD_RVC_EXT=ON
 cmake --build build-rvc --target avc_rvc
 ```
 
+On Windows use the normal Visual Studio generator and configuration, for
+example `cmake --build build-rvc --config RelWithDebInfo --target avc_rvc`.
+The pinned archives include native x64 Windows builds of ONNX Runtime and the
+self-contained CPython converter. The installed extension and ONNX Runtime
+DLLs are placed together under `bin/extensions`.
+
 The download is cached in the build directory. For an offline build or a
 private ONNX Runtime build, add
-`-DONNXRUNTIME_ROOT=/opt/onnxruntime-linux-x64`. CUDA selects the official GPU
-archive automatically:
+`-DONNXRUNTIME_ROOT=/opt/onnxruntime-linux-x64` (or an extracted Windows x64
+package). CUDA selects the official platform GPU archive automatically:
 
 ```sh
 cmake -S . -B build-rvc -DAVC_BUILD_RVC_EXT=ON -DAVC_RVC_ENABLE_CUDA=ON
@@ -46,8 +52,9 @@ daemon endpoint; they are never loaded into browser JavaScript or daemon memory
 as one large buffer. The settings UI shows conversion progress and supports
 cancellation and model deletion.
 
-The converter runs in a separate process with no-new-privileges, CPU/file
-limits and a best-effort network namespace. Checkpoints are opened only with
+The converter runs in a separate process. Linux applies no-new-privileges,
+CPU/file limits and a best-effort network namespace; Windows uses a Job Object
+with a CPU-time limit, memory limit and kill-on-close containment. Checkpoints are opened only with
 PyTorch 2.12.1's restricted `weights_only=True` loader; the converter refuses
 PyTorch versions below 2.10 because they include known weights-only loader
 vulnerabilities. A checkpoint that needs arbitrary Python pickle objects is

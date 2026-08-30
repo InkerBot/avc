@@ -14,35 +14,73 @@ import type { ParamDescriptor } from '../api'
 import { colorOf } from '../theme'
 import { ExtensionComponent } from '../extensions/ExtensionComponent'
 import { useExtensionContext } from '../extensions/context'
+import { extensionNodeType, extensionTranslationKey } from '../i18n'
 
-function paramLabel(t: TFunction, nodeType: string, param: ParamDescriptor): string {
-  return t([`nodes.${nodeType}.params.${param.name}.name`, `params.${param.name}.name`], {
+function nodeTranslationKeys(
+  extensionId: string,
+  nodeType: string,
+  suffix: string,
+  fallback: string[] = [],
+): string[] {
+  return [
+    ...(extensionId
+      ? [
+          extensionTranslationKey(
+            extensionId,
+            `nodes.${extensionNodeType(extensionId, nodeType)}.${suffix}`,
+          ),
+        ]
+      : []),
+    `nodes.${nodeType}.${suffix}`,
+    ...fallback,
+  ]
+}
+
+function paramLabel(
+  t: TFunction,
+  extensionId: string,
+  nodeType: string,
+  param: ParamDescriptor,
+): string {
+  return t(nodeTranslationKeys(
+    extensionId,
+    nodeType,
+    `params.${param.name}.name`,
+    [`params.${param.name}.name`],
+  ), {
     defaultValue: param.name.replace(/_/g, ' '),
   })
 }
 
-function paramHint(t: TFunction, nodeType: string, param: ParamDescriptor): string {
-  return t(`nodes.${nodeType}.params.${param.name}.description`, {
+function paramHint(
+  t: TFunction,
+  extensionId: string,
+  nodeType: string,
+  param: ParamDescriptor,
+): string {
+  return t(nodeTranslationKeys(extensionId, nodeType, `params.${param.name}.description`), {
     defaultValue: param.description ?? '',
   })
 }
 
 function ParamControl({
   nodeId,
+  extensionId,
   nodeType,
   param,
   value,
   onChange,
 }: {
   nodeId: string
+  extensionId: string
   nodeType: string
   param: ParamDescriptor
   value: number
   onChange: (v: number) => void
 }) {
   const { t } = useTranslation()
-  const label = paramLabel(t, nodeType, param)
-  const hint = paramHint(t, nodeType, param)
+  const label = paramLabel(t, extensionId, nodeType, param)
+  const hint = paramHint(t, extensionId, nodeType, param)
 
   if (param.type === 'bool') {
     return (
@@ -69,7 +107,11 @@ function ParamControl({
             <option key={valueLabel} value={i}>
               {t(
                 [
-                  `nodes.${nodeType}.params.${param.name}.values.${valueLabel}`,
+                  ...nodeTranslationKeys(
+                    extensionId,
+                    nodeType,
+                    `params.${param.name}.values.${valueLabel}`,
+                  ),
                   `enumValues.${valueLabel}`,
                 ],
                 { defaultValue: valueLabel },
@@ -116,23 +158,25 @@ function ParamControl({
 
 function TargetControl({
   param,
+  extensionId,
   nodeType,
   value,
   onChange,
 }: {
   param: ParamDescriptor
+  extensionId: string
   nodeType: string
   value: string
   onChange: (v: string) => void
 }) {
   const { t } = useTranslation()
-  const hint = paramHint(t, nodeType, param)
+  const hint = paramHint(t, extensionId, nodeType, param)
 
   if (param.type === 'text' || param.type === 'path') {
     const path = param.type === 'path'
     return (
       <label className="field">
-        <span className="field__name">{paramLabel(t, nodeType, param)}</span>
+        <span className="field__name">{paramLabel(t, extensionId, nodeType, param)}</span>
         <input
           type="text"
           value={value}
@@ -148,7 +192,7 @@ function TargetControl({
 
   return (
     <div className="field">
-      <span className="field__name">{paramLabel(t, nodeType, param)}</span>
+      <span className="field__name">{paramLabel(t, extensionId, nodeType, param)}</span>
       <DevicePicker
         role={param.deviceRole === 'playback' ? 'playback' : 'capture'}
         value={value}
@@ -437,18 +481,27 @@ export function Inspector() {
   }
 
   const counts = portCounts(descriptor, node.data)
+  const extensionName = descriptor.extension
+    ? t(extensionTranslationKey(descriptor.extension, 'name'), {
+        defaultValue: extension?.name || descriptor.extension,
+      })
+    : ''
 
   return (
     <div className="panel">
       <h2 className="panel__title">{t('inspector.title')}</h2>
       <div className="inspector__head" style={{ borderLeftColor: colorOf(descriptor.category) }}>
-        <strong>{t(`nodes.${node.data.type}.label`, { defaultValue: descriptor.label })}</strong>
+        <strong>
+          {t(nodeTranslationKeys(descriptor.extension, node.data.type, 'label'), {
+            defaultValue: descriptor.label,
+          })}
+        </strong>
         <code>{node.id}</code>
       </div>
 
       {descriptor.extension && (
         <p className="hint hint--strong">
-          {t('inspector.fromExtension', { extension: descriptor.extension })}
+          {t('inspector.fromExtension', { extension: extensionName })}
         </p>
       )}
 
@@ -475,6 +528,7 @@ export function Inspector() {
           <TargetControl
             key={param.name}
             param={param}
+            extensionId={descriptor.extension}
             nodeType={node.data.type}
             value={node.data.options[param.name] ?? ''}
             onChange={(v) => setOption(node.id, param.name, v)}
@@ -483,6 +537,7 @@ export function Inspector() {
           <ParamControl
             key={param.name}
             nodeId={node.id}
+            extensionId={descriptor.extension}
             nodeType={node.data.type}
             param={param}
             value={node.data.params[param.name] ?? (typeof param.default === 'number' ? param.default : 0)}

@@ -109,6 +109,16 @@ export interface AudioDevice {
   outputPorts: number
 }
 
+export interface UsbIpDriverStatus {
+  supported: boolean
+  clientPresent: boolean
+  driverReady: boolean
+  compatible: boolean
+  installerAvailable: boolean
+  version: string | null
+  error: string | null
+}
+
 export interface SpecNode {
   id: string
   type: string
@@ -116,7 +126,7 @@ export interface SpecNode {
   params: Record<string, number | string>
   inputs?: number
   outputs?: number
-  ui: { x: number; y: number }
+  ui: { x: number; y: number; width?: number; height?: number }
 }
 
 export interface SpecEdge {
@@ -152,6 +162,14 @@ export interface DomainTelemetry {
   dspUs: number
   loadAvg: number
   load: number
+}
+
+export interface TextTelemetry {
+  text: string
+  stream: string
+  segment: number
+  revision: number
+  final: boolean
 }
 
 export interface Telemetry {
@@ -201,6 +219,7 @@ export interface Telemetry {
   meters: Record<string, { peak: number; rms: number }>
 
   scopes: Record<string, { wave: number[]; bands: number[] }>
+  texts: Record<string, TextTelemetry | string>
   scopeBandsHz: number[]
 }
 
@@ -218,86 +237,197 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T)
 }
 
+interface NativeWebView {
+  postMessage(message: unknown): void
+  addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void
+}
+
+interface NativeResponse {
+  kind: 'response'
+  id: number
+  ok: boolean
+  data?: unknown
+  status?: number
+  error?: string
+}
+
+interface NativeEvent {
+  kind: 'event'
+  event: string
+  data: unknown
+}
+
+const nativeWebView = (window as Window & {
+  chrome?: { webview?: NativeWebView }
+}).chrome?.webview
+
+export const desktopBridgeAvailable = nativeWebView !== undefined
+
+let nextNativeRequest = 0
+const nativePending = new Map<number, {
+  resolve: (value: unknown) => void
+  reject: (reason: Error) => void
+  timer: ReturnType<typeof setTimeout>
+}>()
+const nativeListeners = new Map<string, Set<(data: unknown) => void>>()
+
+nativeWebView?.addEventListener('message', (message) => {
+  const value = message.data as NativeResponse | NativeEvent
+  if (value.kind === 'response' && typeof value.id === 'number') {
+    const pending = nativePending.get(value.id)
+    if (!pending) return
+    nativePending.delete(value.id)
+    clearTimeout(pending.timer)
+    if (value.ok) {
+      pending.resolve(value.data)
+    } else {
+      pending.reject(Object.assign(new Error(value.error ?? 'Desktop request failed'), {
+        status: value.status ?? 500,
+      }))
+    }
+    return
+  }
+  if (value.kind === 'event' && typeof value.event === 'string') {
+    nativeListeners.get(value.event)?.forEach((listener) => listener(value.data))
+  }
+})
+
+function nativeCall<T>(
+  method: string,
+  params: Record<string, unknown> = {},
+  timeoutMs = 60_000,
+): Promise<T> {
+  if (!nativeWebView) return Promise.reject(new Error('The desktop bridge is unavailable'))
+  const id = ++nextNativeRequest
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      nativePending.delete(id)
+      reject(new Error(`Desktop request timed out: ${method}`))
+    }, timeoutMs)
+    nativePending.set(id, {
+      resolve: (value) => resolve(value as T),
+      reject,
+      timer,
+    })
+    nativeWebView.postMessage({ kind: 'request', id, method, params })
+  })
+}
+
+function nativeOr<T>(
+  method: string,
+  params: Record<string, unknown>,
+  fallback: () => Promise<T>,
+): Promise<T> {
+  return nativeWebView ? nativeCall<T>(method, params) : fallback()
+}
+
+function subscribeNative<T>(event: string, listener: (value: T) => void): () => void {
+  const listeners = nativeListeners.get(event) ?? new Set<(data: unknown) => void>()
+  const wrapped = (data: unknown) => listener(data as T)
+  listeners.add(wrapped)
+  nativeListeners.set(event, listeners)
+  return () => {
+    listeners.delete(wrapped)
+    if (listeners.size === 0) nativeListeners.delete(event)
+  }
+}
+
 export const api = {
-  descriptors: () => json<NodeDescriptor[]>('/api/descriptors'),
-  graph: () => json<{ spec: GraphSpec }>('/api/graph'),
+  descriptors: () => nativeOr('descriptors', {}, () => json<NodeDescriptor[]>('/api/descriptors')),
+  graph: () => nativeOr('graph', {}, () => json<{ spec: GraphSpec }>('/api/graph')),
   presets: () =>
-    json<{ presets: string[]; extensionPresets: ExtensionPresetRef[] }>('/api/presets'),
-  audioDevices: () => json<AudioDevice[]>('/api/devices'),
+    nativeOr('presets', {}, () =>
+      json<{ presets: string[]; extensionPresets: ExtensionPresetRef[] }>('/api/presets')),
+  audioDevices: () => nativeOr('audioDevices', {}, () => json<AudioDevice[]>('/api/devices')),
 
   applyGraph: (spec: GraphSpec) =>
-    json<void>('/api/graph', {
+    nativeOr('applyGraph', { spec }, () => json<void>('/api/graph', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ spec }),
-    }),
+    })),
 
   setParam: (node: string, param: string, value: number) =>
-    json<void>('/api/params', {
+    nativeOr('setParam', { node, param, value }, () => json<void>('/api/params', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ node, param, value }),
-    }),
+    })),
 
   savePreset: (name: string) =>
-    json<void>(`/api/presets/${encodeURIComponent(name)}`, { method: 'PUT' }),
+    nativeOr('savePreset', { name }, () =>
+      json<void>(`/api/presets/${encodeURIComponent(name)}`, { method: 'PUT' })),
 
   loadPreset: (name: string) =>
-    json<void>(`/api/presets/${encodeURIComponent(name)}/load`, {
+    nativeOr('loadPreset', { name }, () => json<void>(`/api/presets/${encodeURIComponent(name)}/load`, {
       method: 'POST',
-    }),
+    })),
 
   deletePreset: (name: string) =>
-    json<void>(`/api/presets/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    nativeOr('deletePreset', { name }, () =>
+      json<void>(`/api/presets/${encodeURIComponent(name)}`, { method: 'DELETE' })),
 
   setProfiling: (enabled: boolean) =>
-    json<void>('/api/profiling', {
+    nativeOr('setProfiling', { enabled }, () => json<void>('/api/profiling', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
-    }),
+    })),
 
-  resetStats: () => json<void>('/api/stats/reset', { method: 'POST' }),
+  resetStats: () => nativeOr('resetStats', {}, () =>
+    json<void>('/api/stats/reset', { method: 'POST' })),
 
-  restartEngine: () => json<void>('/api/engine/restart', { method: 'POST' }),
+  restartEngine: () => nativeOr('restartEngine', {}, () =>
+    json<void>('/api/engine/restart', { method: 'POST' })),
 
-  extensions: () => json<Extension[]>('/api/extensions'),
+  forceRestartEngine: () => nativeOr('forceRestartEngine', {}, () =>
+    json<void>('/api/engine/restart/force', { method: 'POST' })),
 
-  rescanExtensions: () => json<Extension[]>('/api/extensions/rescan', { method: 'POST' }),
+  usbIpDriverStatus: () => nativeOr('usbIpDriverStatus', {}, () =>
+    json<UsbIpDriverStatus>('/api/usbip/driver')),
+
+  installUsbIpDriver: () => nativeWebView
+    ? nativeCall<UsbIpDriverStatus>('installUsbIpDriver', {}, 330_000)
+    : json<UsbIpDriverStatus>('/api/usbip/driver/install', { method: 'POST' }),
+
+  extensions: () => nativeOr('extensions', {}, () => json<Extension[]>('/api/extensions')),
+
+  rescanExtensions: () => nativeOr('rescanExtensions', {}, () =>
+    json<Extension[]>('/api/extensions/rescan', { method: 'POST' })),
 
   setExtensionEnabled: (key: string, enabled: boolean) =>
-    json<Extension[]>(
+    nativeOr('setExtensionEnabled', { key, enabled }, () => json<Extension[]>(
       `/api/extensions/${encodeURIComponent(key)}/${enabled ? 'enable' : 'disable'}`,
       { method: 'POST' },
-    ),
+    )),
 
   saveExtensionSettings: (key: string, values: Record<string, string>) =>
-    json<void>(`/api/extensions/${encodeURIComponent(key)}/settings`, {
+    nativeOr('saveExtensionSettings', { key, values }, () =>
+      json<void>(`/api/extensions/${encodeURIComponent(key)}/settings`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ values }),
-    }),
+    })),
 
   deleteExtension: (key: string) =>
-    json<Extension[]>(`/api/extensions/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+    nativeOr('deleteExtension', { key }, () =>
+      json<Extension[]>(`/api/extensions/${encodeURIComponent(key)}`, { method: 'DELETE' })),
 
-  installExtension: (file: File) =>
-    json<Extension[]>(`/api/extensions/install?name=${encodeURIComponent(file.name)}`, {
-      method: 'POST',
-      body: file,
-    }),
+  chooseExtension: () => nativeCall<Extension[] | null>('chooseExtension'),
 
   loadExtensionPreset: (key: string, name: string) =>
-    json<void>(
+    nativeOr('loadExtensionPreset', { key, name }, () => json<void>(
       `/api/presets/ext/${encodeURIComponent(key)}/${encodeURIComponent(name)}/load`,
       { method: 'POST' },
-    ),
+    )),
 
   extensionUiManifest: (key: string) =>
-    json<ExtensionUiManifest>(`/api/extensions/${encodeURIComponent(key)}/ui/manifest`),
+    nativeOr('extensionUiManifest', { key }, () =>
+      json<ExtensionUiManifest>(`/api/extensions/${encodeURIComponent(key)}/ui/manifest`)),
 
   callExtensionUi: (key: string, method: string, data: unknown) =>
-    json<{ data: unknown }>(`/api/extensions/${encodeURIComponent(key)}/ui/call`, {
+    nativeWebView ? nativeCall<unknown>('callExtensionUi', { key, method, data })
+      : json<{ data: unknown }>(`/api/extensions/${encodeURIComponent(key)}/ui/call`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ method, data }),
@@ -310,12 +440,16 @@ export function extensionUiAssetUrl(
   path: string,
 ): string {
   const encodedPath = path.split('/').map(encodeURIComponent).join('/')
+  if (nativeWebView) {
+    return `https://avc.local/__avc/extensions/${encodeURIComponent(key)}/${encodeURIComponent(digest)}/${encodedPath}`
+  }
   return `/api/extensions/${encodeURIComponent(key)}/ui/assets/${encodeURIComponent(digest)}/${encodedPath}`
 }
 
 export function subscribeExtensionEvents(
   onData: (event: ExtensionUiEvent) => void,
 ): () => void {
+  if (nativeWebView) return subscribeNative('extension', onData)
   const source = new EventSource('/api/extensions/ui/events')
   const listener = (event: Event) => {
     try {
@@ -328,6 +462,7 @@ export function subscribeExtensionEvents(
 }
 
 export function subscribeTelemetry(onData: (t: Telemetry) => void): () => void {
+  if (nativeWebView) return subscribeNative('telemetry', onData)
   const source = new EventSource('/api/events')
   source.onmessage = (event) => {
     try {

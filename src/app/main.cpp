@@ -5,6 +5,8 @@
 #include <csignal>
 
 #ifdef _WIN32
+#include "audio/UsbIpAudio.hpp"
+
 #include <windows.h>
 #endif
 
@@ -46,6 +48,20 @@ void installSignalHandlers()
 #endif
 }
 
+#ifdef _WIN32
+void hidePrivateDesktopConsole()
+{
+    // A console-subsystem binary keeps command-line diagnostics working when
+    // launched from a terminal. Explorer gives it a brand-new console of its
+    // own; hide only that private window so normal desktop launches do not
+    // leave a terminal beside the editor.
+    DWORD processes[2]{};
+    if (GetConsoleWindow() != nullptr && GetConsoleProcessList(processes, 2) == 1) {
+        ShowWindow(GetConsoleWindow(), SW_HIDE);
+    }
+}
+#endif
+
 }
 
 int main(int argc, char **argv)
@@ -61,6 +77,14 @@ int main(int argc, char **argv)
         avc::app::printUsage();
         return 0;
     }
+#ifdef _WIN32
+    if (!options.usbip_operation.empty()) {
+        return avc::audio::runUsbIpDeviceHelper(options.usbip_operation, options.usbip_buses);
+    }
+    if (options.desktop) {
+        hidePrivateDesktopConsole();
+    }
+#endif
 
     avc::log::init(options.log_level);
     installSignalHandlers();

@@ -6,6 +6,7 @@ import {
   type ExtensionUiEvent,
   type ExtensionUiManifest,
 } from '../api'
+import { extensionI18n, removeExtensionI18n, type ExtensionI18n } from '../i18n'
 
 export type ExtensionSurface = 'settings' | 'node-inspector' | 'node-body'
 
@@ -18,6 +19,7 @@ interface Registration {
 
 export interface ExtensionElementContext {
   extension: Extension
+  i18n: ExtensionI18n
   call(method: string, data?: unknown): Promise<unknown>
   on(event: string, listener: (data: unknown) => void): () => void
   settings: {
@@ -42,23 +44,75 @@ declare global {
 
 type Listener = (data: unknown) => void
 
+export interface ExtensionActivationApi {
+  readonly extension: Readonly<{ key: string; id: string }>
+  readonly i18n: ExtensionI18n
+  call(method: string, data?: unknown): Promise<unknown>
+  on(event: string, listener: Listener): () => void
+  readonly components: Readonly<{
+    registerSettings(tagName: string): void
+    registerNodeInspector(nodeType: string, tagName: string): void
+    registerNodeBody(nodeType: string, tagName: string): void
+  }>
+}
+
 class ExtensionRuntime {
   private registrations = new Map<string, Registration>()
-  private loading = new Map<string, Promise<Registration | null>>()
+  private loading = new Map<string, {
+    digest: string
+    promise: Promise<Registration | null>
+  }>()
+  private desiredDigests = new Map<string, string>()
   private listeners = new Map<string, Set<Listener>>()
   private stopEvents: (() => void) | null = null
 
-  load(extension: Extension): Promise<Registration | null> {
-    if (!extension.hasUi || extension.state !== 'loaded') return Promise.resolve(null)
-    const current = this.registrations.get(extension.key)
-    if (current?.manifest.digest === extension.uiDigest) return Promise.resolve(current)
-    if (current) this.registrations.delete(extension.key)
-    const inflight = this.loading.get(extension.key)
-    if (inflight) return inflight
+  async sync(extensions: Extension[]): Promise<void> {
+    const available = new Map(
+      extensions
+        .filter((extension) => extension.hasUi && extension.state === 'loaded')
+        .map((extension) => [extension.key, extension]),
+    )
+    for (const key of this.desiredDigests.keys()) {
+      if (!available.has(key)) this.unload(key)
+    }
+    for (const [key, registration] of this.registrations) {
+      const extension = available.get(key)
+      if (!extension || extension.uiDigest !== registration.manifest.digest) this.unload(key)
+    }
+    await Promise.allSettled([...available.values()].map((extension) => this.load(extension)))
+  }
 
-    const promise = this.activate(extension).finally(() => this.loading.delete(extension.key))
-    this.loading.set(extension.key, promise)
+  load(extension: Extension): Promise<Registration | null> {
+    if (!extension.hasUi || extension.state !== 'loaded') {
+      this.unload(extension.key)
+      return Promise.resolve(null)
+    }
+    const current = this.registrations.get(extension.key)
+    if (current?.manifest.digest === extension.uiDigest) {
+      this.desiredDigests.set(extension.key, extension.uiDigest)
+      return Promise.resolve(current)
+    }
+    if (current) this.unload(extension.key)
+    this.desiredDigests.set(extension.key, extension.uiDigest)
+    const inflight = this.loading.get(extension.key)
+    if (inflight?.digest === extension.uiDigest) return inflight.promise
+    if (inflight) {
+      return inflight.promise
+        .catch(() => null)
+        .then(() => this.load(extension))
+    }
+
+    const promise = this.activate(extension).finally(() => {
+      if (this.loading.get(extension.key)?.promise === promise) {
+        this.loading.delete(extension.key)
+      }
+    })
+    this.loading.set(extension.key, { digest: extension.uiDigest, promise })
     return promise
+  }
+
+  i18n(extensionId: string): ExtensionI18n {
+    return extensionI18n(extensionId)
   }
 
   tag(registration: Registration, surface: ExtensionSurface, nodeType?: string): string | null {
@@ -93,6 +147,13 @@ class ExtensionRuntime {
     })
   }
 
+  private unload(key: string) {
+    const current = this.registrations.get(key)
+    if (current) removeExtensionI18n(current.manifest.id)
+    this.registrations.delete(key)
+    this.desiredDigests.delete(key)
+  }
+
   private async activate(extension: Extension): Promise<Registration> {
     const manifest = await api.extensionUiManifest(extension.key)
     const registration: Registration = {
@@ -111,8 +172,9 @@ class ExtensionRuntime {
         throw new Error(`Extension ${manifest.id} cannot manage node type ${nodeType}`)
       }
     }
-    const scopedApi = Object.freeze({
+    const scopedApi: ExtensionActivationApi = Object.freeze({
       extension: Object.freeze({ key: extension.key, id: manifest.id }),
+      i18n: extensionI18n(manifest.id),
       call: (method: string, data: unknown = null) => api.callExtensionUi(extension.key, method, data),
       on: (event: string, listener: Listener) => this.on(manifest.id, event, listener),
       components: Object.freeze({
@@ -128,11 +190,24 @@ class ExtensionRuntime {
       }),
     })
 
-    const url = extensionUiAssetUrl(extension.key, manifest.digest, manifest.entry)
-    const module = await import(/* @vite-ignore */ url) as { activate?: (api: typeof scopedApi) => void | Promise<void> }
-    if (typeof module.activate !== 'function') throw new Error('Extension UI module exports no activate(api) function')
-    await module.activate(scopedApi)
-    this.registrations.set(extension.key, registration)
+    try {
+      const url = extensionUiAssetUrl(extension.key, manifest.digest, manifest.entry)
+      const module = await import(/* @vite-ignore */ url) as {
+        activate?: (api: ExtensionActivationApi) => void | Promise<void>
+      }
+      if (typeof module.activate !== 'function') {
+        throw new Error('Extension UI module exports no activate(api) function')
+      }
+      await module.activate(scopedApi)
+    } catch (error) {
+      removeExtensionI18n(manifest.id)
+      throw error
+    }
+    if (this.desiredDigests.get(extension.key) === manifest.digest) {
+      this.registrations.set(extension.key, registration)
+    } else {
+      removeExtensionI18n(manifest.id)
+    }
     return registration
   }
 }

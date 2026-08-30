@@ -237,7 +237,8 @@ nlohmann::json specJson(const graph::GraphSpec &spec)
 
 nlohmann::json telemetryJson(const audio::BackendStats &backend, const graph::GraphStats &graph,
                              const std::vector<graph::MeterReading> &meters,
-                             const std::vector<graph::ScopeReading> &scopes)
+                             const std::vector<graph::ScopeReading> &scopes,
+                             const std::vector<graph::TextReading> &texts)
 {
     const std::uint32_t quantum =
         backend.actual_quantum > 0 ? backend.actual_quantum : backend.quantum;
@@ -252,6 +253,17 @@ nlohmann::json telemetryJson(const audio::BackendStats &backend, const graph::Gr
     json scope_json = json::object();
     for (const graph::ScopeReading &scope : scopes) {
         scope_json[scope.node] = {{"wave", scope.wave}, {"bands", scope.bands}};
+    }
+
+    json text_json = json::object();
+    for (const graph::TextReading &text : texts) {
+        text_json[text.node] = {
+            {"text", text.text},
+            {"stream", text.segmented ? std::to_string(text.stream) : std::string{}},
+            {"segment", text.segment},
+            {"revision", text.revision},
+            {"final", text.final},
+        };
     }
 
     json cost_json = json::object();
@@ -345,6 +357,7 @@ nlohmann::json telemetryJson(const audio::BackendStats &backend, const graph::Gr
         {"droppedParams", graph.dropped_params},
         {"meters", std::move(meter_json)},
         {"scopes", std::move(scope_json)},
+        {"texts", std::move(text_json)},
         {"scopeBandsHz", graph::GraphHost::scopeBandsHz()},
     };
 }

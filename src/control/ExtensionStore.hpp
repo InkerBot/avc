@@ -49,6 +49,7 @@ public:
     bool remove(const std::string &key, std::string &error);
 
     bool install(const std::string &filename, const std::string &bytes, std::string &error);
+    bool installFile(const std::filesystem::path &source, std::string &error);
 
     bool quarantine(const std::filesystem::path &path);
 

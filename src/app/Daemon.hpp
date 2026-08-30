@@ -23,6 +23,9 @@
 
 namespace avc::control {
 class ControlPlane;
+#ifdef _WIN32
+class DesktopHost;
+#endif
 }
 
 namespace avc::app {
@@ -60,6 +63,10 @@ public:
     void resetStats();
 
     void requestRestart();
+    void requestForceRestart();
+
+    nlohmann::json usbIpDriverStatus() const;
+    bool installUsbIpDriver(std::string &error, bool trusted_local = false);
 
     graph::GraphSpec spec() const;
 
@@ -75,7 +82,8 @@ public:
     bool setExtensionSettings(const std::string &key, const nlohmann::json &values,
                               std::string &error);
     bool installExtension(const std::string &filename, const std::string &bytes,
-                          std::string &error);
+                          std::string &error, bool trusted_local = false);
+    bool installExtensionFromPath(const std::filesystem::path &path, std::string &error);
     bool removeExtension(const std::string &key, std::string &error);
     void rescanExtensions();
 
@@ -108,8 +116,14 @@ public:
     nlohmann::json extensionEventsAfter(std::uint64_t &cursor) const;
 
 private:
+    enum class RestartRequest : std::uint8_t {
+        None,
+        Graceful,
+        Force,
+    };
+
     bool startEngine();
-    void stopEngine() noexcept;
+    void stopEngine(bool force = false) noexcept;
     void reapEngine() noexcept;
     bool hasChild() const noexcept
     {
@@ -134,7 +148,7 @@ private:
 
     bool chooseInitialGraph();
     bool resolveTargets();
-    static std::vector<audio::VirtualDeviceRequest> virtualDevicesFor(const graph::GraphSpec &spec);
+    std::vector<audio::VirtualDeviceRequest> virtualDevicesFor(const graph::GraphSpec &spec) const;
 
     void pollGraphFile();
     void persistIfDirty();
@@ -149,6 +163,9 @@ private:
     control::ExtensionStore store_;
     std::filesystem::path manifest_path_;
     std::unique_ptr<control::ControlPlane> control_;
+#ifdef _WIN32
+    std::unique_ptr<control::DesktopHost> desktop_;
+#endif
 
     IpcChannel channel_;
 #ifdef _WIN32
@@ -207,7 +224,7 @@ private:
     bool reply_ok_ = false;
     std::string reply_error_;
 
-    std::atomic<bool> restart_requested_{false};
+    std::atomic<RestartRequest> restart_requested_{RestartRequest::None};
 
     std::chrono::steady_clock::time_point started_at_{};
     int rapid_failures_ = 0;

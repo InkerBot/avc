@@ -24,6 +24,7 @@ export function useExtensionContext(
 
   return useMemo(() => extension ? ({
     extension,
+    i18n: extensionRuntime.i18n(extension.id),
     call: (method, data = null) => api.callExtensionUi(extension.key, method, data),
     on: (event, listener) => extensionRuntime.on(extension.id, event, listener),
     settings: {

@@ -1,5 +1,6 @@
 export const zhCN = {
   app: {
+    language: '界面语言',
     editor: '编辑',
     extensions: '扩展',
     engine: {
@@ -27,6 +28,16 @@ export const zhCN = {
     playing: '应用音频',
     inputs: '输入',
     outputs: '输出',
+    usbipTitle: 'USB/IP 驱动',
+    usbipReady: '已就绪{{version}}',
+    usbipMissing: '未安装',
+    usbipNotReady: '客户端存在，但驱动未就绪',
+    usbipUnsupported: '不支持的版本 {{version}}',
+    usbipInstall: '安装',
+    usbipRepair: '安装 / 修复',
+    usbipInstalling: '安装中…',
+    usbipInstallerMissing: '此版本未包含适用于当前架构的驱动安装器。',
+    usbipInstallConfirm: '安装 USB/IP 驱动会请求管理员权限，并会短暂重置所有 USB 3 集线器；USB 声卡、摄像头和存储设备可能暂时断开。请先结束重要的 USB 任务。是否继续？',
   },
   picker: {
     kind: {
@@ -42,7 +53,7 @@ export const zhCN = {
     followsSystem: '跟随系统',
     channels: '{{count}} 声道',
     whatPlaying: '播放声音',
-    notHere: '设备不可用',
+    notHere: '对象已不存在，请重新选择',
     chooseCapture: '选择音源',
     choosePlayback: '选择输出',
     filter: '筛选设备',
@@ -51,8 +62,8 @@ export const zhCN = {
     micsAndInputs: '输入',
     outputs: '输出',
     outputsHint: '采集播放声音',
-    apps: '应用',
-    appsHint: '仅采集该应用',
+    apps: '窗口与应用',
+    appsHint: '仅采集窗口所属进程及子进程的声音',
   },
   inspector: {
     title: '参数',
@@ -100,8 +111,9 @@ export const zhCN = {
     title: '扩展',
     empty: '未发现扩展',
     rescan: '重新扫描',
-    upload: '上传 .so…',
-    uploadHint: '上传后需手动启用；仅支持本机引擎。',
+    choose: '选择扩展…',
+    chooseHint: '通过系统文件窗口选择本机 DLL；添加后需手动启用。',
+    rescanHint: '浏览器控制模式仅扫描已配置的扩展目录。',
     enable: '启用',
     disable: '禁用',
     delete: '删除',
@@ -126,19 +138,12 @@ export const zhCN = {
     saveHint: '保存会重启引擎，并短暂静音。',
   },
 
-  extensionSettings: {
-    example: {
-      max_rate_hz: {
-        name: '最快速率',
-        description: '速率上限；超过 20 Hz 后接近环形调制。',
-      },
-    },
-  },
   node: {
     unknown: '未知类型 “{{type}}”',
     cold: '冷',
     coldTitle: '冷路径“{{name}}”· +{{ms}} ms',
     nothingSelected: '未选择',
+    objectMissing: '对象不存在',
     exclusive: '独占播放',
     peak: '峰值 {{db}} dBFS',
     latency: '延迟 {{ms}} ms',
@@ -152,6 +157,7 @@ export const zhCN = {
     },
     spectrum: '频谱',
     scopePeak: '峰值 {{db}} dB',
+    waitingForText: '等待文本…',
     in: '输入',
     out: '输出',
     inN: '输入 {{n}}',
@@ -173,6 +179,10 @@ export const zhCN = {
     scheduling: '调度',
     realtime: '实时',
     notRealtime: '非实时',
+    forceRestart: '强制重启引擎',
+    forceRestarting: '正在重启…',
+    forceRestartHint: '立即终止引擎子进程并重新启动；当前音频会中断。',
+    forceRestartConfirm: '这会立即终止音频引擎并中断当前音频，然后启动一个新引擎。是否继续？',
   },
   perf: {
     title: '性能',
@@ -345,6 +355,9 @@ export const zhCN = {
           description: '波形显示时长。',
         },
       },
+    },
+    text: {
+      label: '文本显示',
     },
     ab: {
       label: 'A/B 对比',

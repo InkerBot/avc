@@ -136,7 +136,8 @@ void EngineChild::publishTelemetry()
 
     channel_.send(json{
         {"t", "telemetry"},
-        {"data", control::telemetryJson(backend, graph, meters, host_->scopes())},
+        {"data", control::telemetryJson(backend, graph, meters, host_->scopes(),
+                                        host_->texts())},
     });
 
     if (++frames_since_report_ >= kFramesPerReport) {
@@ -261,6 +262,7 @@ int EngineChild::run()
 
     auto last_telemetry = std::chrono::steady_clock::now();
     bool asked_to_stop = false;
+    bool received_graph = false;
 
     while (g_running.load(std::memory_order_relaxed) && !asked_to_stop) {
         json message;
@@ -270,11 +272,15 @@ int EngineChild::run()
             break;
         }
         if (status == IpcChannel::Status::Message) {
+            received_graph = received_graph
+                             || message.value("t", std::string{}) == "graph";
             asked_to_stop = !dispatch(message);
             // Whatever else arrived in the same read, before going back to
             // sleep -- a slider drag is a burst, not one message.
             while (!asked_to_stop
                    && channel_.receive(message, 0) == IpcChannel::Status::Message) {
+                received_graph = received_graph
+                                 || message.value("t", std::string{}) == "graph";
                 asked_to_stop = !dispatch(message);
             }
         }
@@ -282,7 +288,12 @@ int EngineChild::run()
         host_->poll();
 
         const auto now = std::chrono::steady_clock::now();
-        if (now - last_telemetry >= kTelemetryInterval) {
+        // The daemon publishes virtual devices synchronously after the hello
+        // handshake. Sending telemetry before its first graph request can fill
+        // the reverse anonymous pipe while the daemon is busy; the subsequent
+        // graph write then deadlocks both processes. A graph request is the
+        // protocol point at which both sides have entered their receive loops.
+        if (received_graph && now - last_telemetry >= kTelemetryInterval) {
             publishTelemetry();
             last_telemetry = now;
         }

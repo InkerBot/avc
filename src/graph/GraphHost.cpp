@@ -5,11 +5,13 @@
 #include "node/NodeRegistry.hpp"
 #include "node/basic/MeterNode.hpp"
 #include "node/debug/ScopeNode.hpp"
+#include "node/debug/TextNode.hpp"
 
 #include <chrono>
 #include <cstring>
 #include <set>
 #include <thread>
+#include <utility>
 
 namespace avc::graph {
 namespace {
@@ -132,6 +134,25 @@ std::vector<ScopeReading> GraphHost::scopes()
             out.push_back({current_->nodeIdAt(i),
                            {frame.wave.begin(), frame.wave.end()},
                            {frame.bands.begin(), frame.bands.end()}});
+        }
+    }
+    return out;
+}
+
+std::vector<TextReading> GraphHost::texts()
+{
+    const std::lock_guard<std::mutex> lock(control_mutex_);
+    std::vector<TextReading> out;
+    if (current_ == nullptr) {
+        return out;
+    }
+    node::debug::TextSnapshot snapshot;
+    for (std::size_t i = 0; i < current_->nodeCount(); ++i) {
+        auto *renderer = dynamic_cast<node::debug::TextNode *>(current_->nodeAt(i));
+        if (renderer != nullptr && renderer->takeText(snapshot)) {
+            out.push_back({current_->nodeIdAt(i), std::move(snapshot.text),
+                           snapshot.stream, snapshot.segment, snapshot.revision,
+                           snapshot.segmented, snapshot.final});
         }
     }
     return out;

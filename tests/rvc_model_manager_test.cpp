@@ -85,6 +85,9 @@ TEST_F(RvcModelManagerTest, AcceptsOnlyPlainPthFilenames)
 
 TEST_F(RvcModelManagerTest, StreamsAnOptionalFeatureIndexIntoTheConvertedPackage)
 {
+#ifdef _WIN32
+    GTEST_SKIP() << "the bundled RVC converter currently supports Linux only";
+#endif
     avc::control::RvcModelManager manager(root_ / "data", fakeRuntime());
     std::string error;
     auto upload = manager.beginUpload("source.pth", "indexed", error);
@@ -118,6 +121,9 @@ TEST_F(RvcModelManagerTest, ReportsWhyTheBundledRuntimeIsMissing)
 
 TEST_F(RvcModelManagerTest, StreamsConvertsAndAtomicallyPublishesAModel)
 {
+#ifdef _WIN32
+    GTEST_SKIP() << "the bundled RVC converter currently supports Linux only";
+#endif
     avc::control::RvcModelManager manager(root_ / "data", fakeRuntime());
     std::string error;
     auto upload = manager.beginUpload("source.pth", "voice", error);

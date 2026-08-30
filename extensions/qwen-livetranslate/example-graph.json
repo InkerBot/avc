@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "mic",
+      "type": "capture",
+      "params": { "source": "@default_source" },
+      "outputs": 1,
+      "ui": { "x": 40, "y": 100 }
+    },
+    {
+      "id": "qwen",
+      "type": "qwen-livetranslate.interpreter",
+      "params": {
+        "enabled": 1,
+        "target_language": 1,
+        "source_language": 0,
+        "audio_output": 1,
+        "source_transcript": 1,
+        "jitter_ms": 240
+      },
+      "ui": { "x": 320, "y": 100 }
+    },
+    {
+      "id": "speaker",
+      "type": "playback",
+      "params": { "device": "@default_sink" },
+      "inputs": 1,
+      "ui": { "x": 650, "y": 100 }
+    }
+  ],
+  "edges": [
+    {
+      "from": { "node": "mic", "port": "out_1" },
+      "to": { "node": "qwen", "port": "in" }
+    },
+    {
+      "from": { "node": "qwen", "port": "translated_audio" },
+      "to": { "node": "speaker", "port": "in_1" }
+    }
+  ]
+}

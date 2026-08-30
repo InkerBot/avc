@@ -161,7 +161,19 @@ bool Library::open(const std::filesystem::path &path,
     // including another extension. RTLD_NOW so a missing symbol is a load
     // failure with a message rather than a crash the first time that code runs.
 #ifdef _WIN32
-    handle_ = LoadLibraryW(path.c_str());
+    const std::filesystem::path dependency_dir = path.parent_path() / L"lib";
+    std::error_code dependency_ec;
+    if (std::filesystem::is_directory(dependency_dir, dependency_ec)) {
+        // Keep the directory registered for the process lifetime. Execution
+        // providers may delay-load their own DLLs after this function returns.
+        (void)AddDllDirectory(dependency_dir.c_str());
+    }
+    handle_ = LoadLibraryExW(path.c_str(), nullptr,
+                             LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+                                 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+                                 | LOAD_LIBRARY_SEARCH_USER_DIRS);
+    if (handle_ == nullptr && GetLastError() == ERROR_INVALID_PARAMETER)
+        handle_ = LoadLibraryW(path.c_str());
     if (handle_ == nullptr) {
         error = windowsError();
         return false;

@@ -1,10 +1,10 @@
-import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 
 import { useStore } from '../store'
-import type { Extension } from '../api'
+import { desktopBridgeAvailable, type Extension } from '../api'
 import { ExtensionConfig } from './ExtensionConfig'
+import { extensionNodeType, extensionTranslationKey } from '../i18n'
 
 function status(t: TFunction, extension: Extension): { label: string; tone: string } {
   if (extension.disabledReason === 'crash') {
@@ -36,6 +36,20 @@ function Card({ extension }: { extension: Extension }) {
     nodes.map((n) => n.data.type),
   )
   const isOn = extension.enabled
+  const extensionId = extension.id || extension.key
+  const name = t(extensionTranslationKey(extensionId, 'name'), {
+    defaultValue: extension.name || extension.key,
+  })
+  const description = t(extensionTranslationKey(extensionId, 'description'), {
+    defaultValue: extension.description,
+  })
+  const translatedTypes = inUse.map((type) => t(
+    extensionTranslationKey(
+      extensionId,
+      `nodes.${extensionNodeType(extensionId, type)}.label`,
+    ),
+    { defaultValue: type },
+  ))
 
   return (
     <section
@@ -43,7 +57,7 @@ function Card({ extension }: { extension: Extension }) {
       onClick={() => selectExtension(extension.key)}
     >
       <header className="extcard__head">
-        <h3 className="extcard__name">{extension.name || extension.key}</h3>
+        <h3 className="extcard__name">{name}</h3>
         {extension.version && <span className="extcard__version">{extension.version}</span>}
         <span className="spacer" />
         <span className={`extcard__badge extcard__badge--${badge.tone}`}>{badge.label}</span>
@@ -54,7 +68,7 @@ function Card({ extension }: { extension: Extension }) {
         <span>{extension.path}</span>
       </p>
 
-      {extension.description && <p className="hint">{extension.description}</p>}
+      {description && <p className="hint">{description}</p>}
 
       {extension.error && (
         <p className="banner banner--error extcard__error">{extension.error}</p>
@@ -64,7 +78,13 @@ function Card({ extension }: { extension: Extension }) {
         <div className="chips">
           {extension.nodeTypes.map((type) => (
             <span key={type} className="chip">
-              {type}
+              {t(
+                extensionTranslationKey(
+                  extensionId,
+                  `nodes.${extensionNodeType(extensionId, type)}.label`,
+                ),
+                { defaultValue: type },
+              )}
             </span>
           ))}
         </div>
@@ -83,7 +103,9 @@ function Card({ extension }: { extension: Extension }) {
                 void loadExtensionPreset(extension.key, preset.name)
               }}
             >
-              {preset.name}
+              {t(extensionTranslationKey(extensionId, `presets.${preset.name}`), {
+                defaultValue: preset.name,
+              })}
             </button>
           ))}
         </div>
@@ -91,7 +113,7 @@ function Card({ extension }: { extension: Extension }) {
 
       {isOn && inUse.length > 0 && (
         <p className="hint hint--strong">
-          {t('extensions.inUse', { types: inUse.join(', ') })}
+          {t('extensions.inUse', { types: translatedTypes.join(', ') })}
         </p>
       )}
 
@@ -129,8 +151,7 @@ export function Extensions() {
   const busy = useStore((s) => s.extensionsBusy)
   const error = useStore((s) => s.extensionError)
   const rescanExtensions = useStore((s) => s.rescanExtensions)
-  const installExtension = useStore((s) => s.installExtension)
-  const file = useRef<HTMLInputElement>(null)
+  const chooseExtension = useStore((s) => s.chooseExtension)
 
   return (
     <div className="page">
@@ -142,26 +163,17 @@ export function Extensions() {
             <button className="button button--small" disabled={busy} onClick={() => void rescanExtensions()}>
               {t('extensions.rescan')}
             </button>
-            <button
-              className="button button--small"
-              disabled={busy}
-              onClick={() => file.current?.click()}
-            >
-              {t('extensions.upload')}
-            </button>
-            <input
-              ref={file}
-              type="file"
-              accept=".so"
-              hidden
-              onChange={(e) => {
-                const chosen = e.target.files?.[0]
-                if (chosen) void installExtension(chosen)
-                e.target.value = ''
-              }}
-            />
+            {desktopBridgeAvailable && (
+              <button
+                className="button button--small"
+                disabled={busy}
+                onClick={() => void chooseExtension()}
+              >
+                {t('extensions.choose')}
+              </button>
+            )}
           </div>
-          <p className="hint">{t('extensions.uploadHint')}</p>
+          <p className="hint">{t(desktopBridgeAvailable ? 'extensions.chooseHint' : 'extensions.rescanHint')}</p>
           {error && <p className="banner banner--error">{error}</p>}
         </div>
 

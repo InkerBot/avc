@@ -10,7 +10,15 @@
 #include <utility>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -55,7 +63,11 @@ float squaredDistance(const float *left, const float *right, std::size_t size)
 
 FeatureIndex::~FeatureIndex()
 {
-#ifndef _WIN32
+#ifdef _WIN32
+    if (mapping_ != nullptr) UnmapViewOfFile(mapping_);
+    if (mapping_handle_ != nullptr) CloseHandle(static_cast<HANDLE>(mapping_handle_));
+    if (file_handle_ != nullptr) CloseHandle(static_cast<HANDLE>(file_handle_));
+#else
     if (mapping_ != nullptr) ::munmap(mapping_, mapping_size_);
     if (fd_ >= 0) ::close(fd_);
 #endif
@@ -65,18 +77,40 @@ std::unique_ptr<FeatureIndex> FeatureIndex::load(const std::filesystem::path &pa
                                                  std::uint32_t expected_dimension,
                                                  std::string &error)
 {
-#ifdef _WIN32
-    (void)path;
-    (void)expected_dimension;
-    error = "RVC feature indexes currently support Linux only";
-    return nullptr;
-#else
     if constexpr (std::endian::native != std::endian::little) {
         error = "RVC feature indexes require a little-endian host";
         return nullptr;
     }
 
     auto index = std::unique_ptr<FeatureIndex>(new FeatureIndex);
+#ifdef _WIN32
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        error = "cannot open feature index: " + path.string();
+        return nullptr;
+    }
+    index->file_handle_ = file;
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < static_cast<LONGLONG>(kHeaderBytes)
+        || static_cast<unsigned long long>(size.QuadPart)
+               > (std::numeric_limits<std::size_t>::max)()) {
+        error = "feature index is truncated or too large";
+        return nullptr;
+    }
+    index->mapping_size_ = static_cast<std::size_t>(size.QuadPart);
+    HANDLE mapping = CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (mapping == nullptr) {
+        error = "cannot create feature index file mapping";
+        return nullptr;
+    }
+    index->mapping_handle_ = mapping;
+    index->mapping_ = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+    if (index->mapping_ == nullptr) {
+        error = "cannot memory-map feature index";
+        return nullptr;
+    }
+#else
     index->fd_ = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (index->fd_ < 0) {
         error = "cannot open feature index: " + path.string();
@@ -94,6 +128,7 @@ std::unique_ptr<FeatureIndex> FeatureIndex::load(const std::filesystem::path &pa
         error = "cannot memory-map feature index";
         return nullptr;
     }
+#endif
 
     const auto *bytes = static_cast<const std::byte *>(index->mapping_);
     if (std::memcmp(bytes, kMagic.data(), kMagic.size()) != 0) {
@@ -152,7 +187,6 @@ std::unique_ptr<FeatureIndex> FeatureIndex::load(const std::filesystem::path &pa
         }
     }
     return index;
-#endif
 }
 
 void FeatureIndex::blend(float *features, std::size_t rows, float rate) const

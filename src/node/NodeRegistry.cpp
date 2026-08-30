@@ -8,6 +8,7 @@
 #include "node/debug/AbNode.hpp"
 #include "node/debug/ScopeNode.hpp"
 #include "node/debug/SignalNode.hpp"
+#include "node/debug/TextNode.hpp"
 #include "node/dyn/CompressorNode.hpp"
 #include "node/dyn/GateNode.hpp"
 #include "node/eq/BiquadNode.hpp"
@@ -147,6 +148,7 @@ void NodeRegistry::registerBuiltins()
 
     add(debug::SignalNode::descriptor(), [] { return std::make_unique<debug::SignalNode>(); });
     add(debug::ScopeNode::descriptor(), [] { return std::make_unique<debug::ScopeNode>(); });
+    add(debug::TextNode::descriptor(), [] { return std::make_unique<debug::TextNode>(); });
     add(debug::AbNode::descriptor(), [] { return std::make_unique<debug::AbNode>(); });
 }
 

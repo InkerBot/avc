@@ -4,6 +4,7 @@
 #define AVC_PLUGIN_HPP
 
 #include "avc_plugin.h"
+#include "text_frame.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -22,30 +23,30 @@ namespace avc::sdk {
 inline constexpr const char *kAudioPortType = "audio";
 
 inline constexpr const char *kTextPortType = "text";
-inline constexpr std::uint32_t kTextPortTypeBytes = 4096;
+inline constexpr std::uint32_t kTextPortTypeBytes = text::kBlockBytes;
+
+using TextFrame = text::Frame;
+
+inline TextFrame readTextFrame(const void *block) noexcept
+{
+    return text::readFrame(block);
+}
 
 inline std::string_view readText(const void *block) noexcept
 {
-    if (block == nullptr) {
-        return {};
-    }
-    std::uint32_t length = 0;
-    std::memcpy(&length, block, sizeof(length));
-    if (length > kTextPortTypeBytes - sizeof(length)) {
-        return {};
-    }
-    return {static_cast<const char *>(block) + sizeof(length), length};
+    return readTextFrame(block).value;
 }
 
 inline void writeText(void *block, std::string_view text) noexcept
 {
-    if (block == nullptr) {
-        return;
-    }
-    const auto room = static_cast<std::uint32_t>(kTextPortTypeBytes - sizeof(std::uint32_t));
-    const auto length = static_cast<std::uint32_t>(text.size() < room ? text.size() : room);
-    std::memcpy(block, &length, sizeof(length));
-    std::memcpy(static_cast<char *>(block) + sizeof(length), text.data(), length);
+    avc::text::writePlain(block, text);
+}
+
+inline void writeTextFrame(void *block, std::string_view value, std::uint64_t stream,
+                           std::uint64_t segment, std::uint64_t revision,
+                           bool final = false) noexcept
+{
+    avc::text::writeFrame(block, value, stream, segment, revision, final);
 }
 
 class Node {

@@ -12,6 +12,7 @@ struct VirtualDeviceRequest {
     std::string name;
     IoKind kind = IoKind::VirtualMic;
     std::uint32_t channels = 1;
+    std::uint32_t sample_rate = 48000;
 };
 
 }

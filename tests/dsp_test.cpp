@@ -3,6 +3,7 @@
 #include "node/debug/AbNode.hpp"
 #include "node/debug/ScopeNode.hpp"
 #include "node/debug/SignalNode.hpp"
+#include "node/debug/TextNode.hpp"
 #include "node/dyn/CompressorNode.hpp"
 #include "node/dyn/GateNode.hpp"
 #include "node/eq/BiquadNode.hpp"
@@ -10,9 +11,13 @@
 #include "node/voice/FormantNode.hpp"
 #include "node/voice/PitchNode.hpp"
 
+#include <avc/text_frame.hpp>
+
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstring>
+#include <string>
 #include <vector>
 
 namespace {
@@ -446,6 +451,90 @@ TEST(ScopeNode, DropsFramesRatherThanQueueingThemUp)
     EXPECT_FALSE(scope->takeFrame(frame)) << "takeFrame must drain, not hand back a backlog";
 }
 
+TEST(TextNode, IsATextSink)
+{
+    const NodeDescriptor descriptor = avc::node::debug::TextNode::descriptor();
+    ASSERT_EQ(descriptor.inputs.size(), 1U);
+    EXPECT_EQ(descriptor.inputs[0].type, avc::node::kTextPortType);
+    EXPECT_TRUE(descriptor.outputs.empty());
+}
+
+TEST(TextNode, PublishesTheNewestStreamingSnapshot)
+{
+    avc::node::debug::TextNode node;
+    node.prepare({kRate, 128, 1, 0});
+
+    std::array<std::byte, avc::node::kTextPortTypeBytes> block{};
+    const void *input = block.data();
+    const NodeContext context{nullptr, nullptr, 1, 0, 128, &input, nullptr};
+    const auto publish = [&](std::string_view value) {
+        const auto length = static_cast<std::uint32_t>(value.size());
+        std::memcpy(block.data(), &length, sizeof(length));
+        std::memcpy(block.data() + sizeof(length), value.data(), value.size());
+        node.process(context);
+    };
+
+    publish("H");
+    publish("Hello");
+    publish("Hello, \xE4\xB8\x96\xE7\x95\x8C");
+
+    std::string text;
+    ASSERT_TRUE(node.takeText(text));
+    EXPECT_EQ(text, "Hello, \xE4\xB8\x96\xE7\x95\x8C");
+    EXPECT_FALSE(node.takeText(text));
+
+    publish("Hello, \xE4\xB8\x96\xE7\x95\x8C");
+    EXPECT_FALSE(node.takeText(text)) << "an unchanged value is not another stream update";
+
+    publish("");
+    ASSERT_TRUE(node.takeText(text));
+    EXPECT_TRUE(text.empty());
+}
+
+TEST(TextNode, MakesATruncatedUtf8SnapshotSafeForJson)
+{
+    avc::node::debug::TextNode node;
+    node.prepare({kRate, 128, 1, 0});
+
+    std::array<std::byte, avc::node::kTextPortTypeBytes> block{};
+    const std::uint32_t length = 2;
+    std::memcpy(block.data(), &length, sizeof(length));
+    block[sizeof(length)] = std::byte{0xE4};
+    block[sizeof(length) + 1] = std::byte{0xB8};
+    const void *input = block.data();
+    node.process({nullptr, nullptr, 1, 0, 128, &input, nullptr});
+
+    std::string text;
+    ASSERT_TRUE(node.takeText(text));
+    EXPECT_EQ(text, "\xEF\xBF\xBD\xEF\xBF\xBD");
+}
+
+TEST(TextNode, PublishesFinalMetadataEvenWhenTheTextDoesNotChange)
+{
+    avc::node::debug::TextNode node;
+    node.prepare({kRate, 128, 1, 0});
+
+    std::array<std::byte, avc::node::kTextPortTypeBytes> block{};
+    const void *input = block.data();
+    const NodeContext context{nullptr, nullptr, 1, 0, 128, &input, nullptr};
+
+    avc::text::writeFrame(block.data(), "hello", 9, 2, 1, false);
+    node.process(context);
+    avc::node::debug::TextSnapshot snapshot;
+    ASSERT_TRUE(node.takeText(snapshot));
+    EXPECT_TRUE(snapshot.segmented);
+    EXPECT_FALSE(snapshot.final);
+    EXPECT_EQ(snapshot.stream, 9U);
+    EXPECT_EQ(snapshot.segment, 2U);
+
+    avc::text::writeFrame(block.data(), "hello", 9, 2, 2, true);
+    node.process(context);
+    ASSERT_TRUE(node.takeText(snapshot));
+    EXPECT_EQ(snapshot.text, "hello");
+    EXPECT_TRUE(snapshot.final);
+    EXPECT_EQ(snapshot.revision, 2U);
+}
+
 TEST(AbNode, SelectsEitherSide)
 {
     auto node = std::make_unique<avc::node::debug::AbNode>();
@@ -500,7 +589,7 @@ TEST(EveryNode, ToleratesAnUnconnectedInput)
 {
     for (const NodeDescriptor *desc : avc::node::NodeRegistry::instance().all()) {
         std::unique_ptr<Node> node = avc::node::NodeRegistry::instance().create(desc->type);
-        if (node == nullptr) {
+        if (node == nullptr || desc->outputs.empty()) {
             continue;
         }
         node->prepare({kRate, 128, 1, 1});

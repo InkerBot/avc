@@ -22,6 +22,7 @@ nlohmann::json specJson(const graph::GraphSpec &spec);
 
 nlohmann::json telemetryJson(const audio::BackendStats &backend, const graph::GraphStats &graph,
                              const std::vector<graph::MeterReading> &meters,
-                             const std::vector<graph::ScopeReading> &scopes);
+                             const std::vector<graph::ScopeReading> &scopes,
+                             const std::vector<graph::TextReading> &texts);
 
 }

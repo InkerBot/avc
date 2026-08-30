@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "mic",
+      "type": "capture",
+      "params": { "source": "@default_source" },
+      "outputs": 1,
+      "ui": { "x": 40, "y": 100 }
+    },
+    {
+      "id": "stt",
+      "type": "qwen-livetranslate.stt",
+      "params": { "enabled": 1, "language": 0 },
+      "ui": { "x": 300, "y": 100 }
+    },
+    {
+      "id": "tts",
+      "type": "qwen-livetranslate.tts",
+      "params": {
+        "enabled": 1,
+        "language": 0,
+        "speech_rate": 1,
+        "volume": 50,
+        "pitch_rate": 1,
+        "jitter_ms": 160
+      },
+      "ui": { "x": 560, "y": 100 }
+    },
+    {
+      "id": "speaker",
+      "type": "playback",
+      "params": { "device": "@default_sink" },
+      "inputs": 1,
+      "ui": { "x": 830, "y": 100 }
+    },
+    {
+      "id": "text",
+      "type": "text",
+      "ui": { "x": 560, "y": 300 }
+    }
+  ],
+  "edges": [
+    {
+      "from": { "node": "mic", "port": "out_1" },
+      "to": { "node": "stt", "port": "audio" }
+    },
+    {
+      "from": { "node": "stt", "port": "transcript" },
+      "to": { "node": "tts", "port": "text" }
+    },
+    {
+      "from": { "node": "stt", "port": "transcript" },
+      "to": { "node": "text", "port": "in" }
+    },
+    {
+      "from": { "node": "tts", "port": "audio" },
+      "to": { "node": "speaker", "port": "in_1" }
+    }
+  ]
+}

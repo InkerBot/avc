@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react'
 import { useStore } from '../store'
-import type { AudioDevice } from '../api'
+import { api, type AudioDevice, type UsbIpDriverStatus } from '../api'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 
@@ -27,7 +28,41 @@ function group(devices: AudioDevice[], t: TFunction) {
 
 export function AudioDevices() {
   const devices = useStore((s) => s.audioDevices)
+  const refreshAudioDevices = useStore((s) => s.refreshAudioDevices)
+  const [usbIp, setUsbIp] = useState<UsbIpDriverStatus | null>(null)
+  const [driverBusy, setDriverBusy] = useState(false)
+  const [driverError, setDriverError] = useState<string | null>(null)
   const { t } = useTranslation()
+
+  useEffect(() => {
+    let alive = true
+    api.usbIpDriverStatus()
+      .then((status) => { if (alive) setUsbIp(status) })
+      .catch((error: Error) => { if (alive) setDriverError(error.message) })
+    return () => { alive = false }
+  }, [])
+
+  const installDriver = async () => {
+    if (!window.confirm(t('devices.usbipInstallConfirm'))) return
+    setDriverBusy(true)
+    setDriverError(null)
+    try {
+      setUsbIp(await api.installUsbIpDriver())
+      void refreshAudioDevices()
+    } catch (error) {
+      setDriverError((error as Error).message)
+    } finally {
+      setDriverBusy(false)
+    }
+  }
+
+  const driverState = usbIp?.driverReady
+    ? t('devices.usbipReady', { version: usbIp.version ? ` · ${usbIp.version}` : '' })
+    : usbIp?.clientPresent && !usbIp.compatible
+      ? t('devices.usbipUnsupported', { version: usbIp.version ?? '?' })
+      : usbIp?.clientPresent
+        ? t('devices.usbipNotReady')
+        : t('devices.usbipMissing')
 
   return (
     <div className="panel">
@@ -49,6 +84,35 @@ export function AudioDevices() {
             </ul>
           </section>
         ))}
+      {usbIp?.supported && (
+        <section className="usbip-driver">
+          <h3 className="palette__category">{t('devices.usbipTitle')}</h3>
+          <div className="usbip-driver__row">
+            <span className={`usbip-driver__state${usbIp.driverReady ? ' usbip-driver__state--ready' : ''}`}>
+              {driverState}
+            </span>
+            {usbIp.installerAvailable && (
+              <button
+                className="button button--small"
+                disabled={driverBusy}
+                onClick={() => void installDriver()}
+              >
+                {driverBusy
+                  ? t('devices.usbipInstalling')
+                  : usbIp.clientPresent
+                    ? t('devices.usbipRepair')
+                    : t('devices.usbipInstall')}
+              </button>
+            )}
+          </div>
+          {!usbIp.installerAvailable && !usbIp.driverReady && (
+            <p className="hint">{t('devices.usbipInstallerMissing')}</p>
+          )}
+          {(driverError || usbIp.error) && (
+            <span className="field__error">{driverError ?? usbIp.error}</span>
+          )}
+        </section>
+      )}
     </div>
   )
 }

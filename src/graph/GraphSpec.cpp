@@ -130,7 +130,9 @@ bool parseNode(const json &value, GraphSpec &spec, std::string &error, std::size
             return false;
         }
         for (const auto &[key, target] : {std::pair{"x", &node.ui_x},
-                                          std::pair{"y", &node.ui_y}}) {
+                                          std::pair{"y", &node.ui_y},
+                                          std::pair{"width", &node.ui_width},
+                                          std::pair{"height", &node.ui_height}}) {
             const auto it = value["ui"].find(key);
             if (it != value["ui"].end()) {
                 if (!it->is_number()) {
@@ -140,6 +142,11 @@ bool parseNode(const json &value, GraphSpec &spec, std::string &error, std::size
                 *target = it->get<float>();
                 if (!std::isfinite(*target)) {
                     error = path + ".ui." + key + " must be finite";
+                    return false;
+                }
+                if ((key == std::string_view{"width"} || key == std::string_view{"height"})
+                    && *target <= 0.0F) {
+                    error = path + ".ui." + key + " must be positive";
                     return false;
                 }
             }
@@ -258,6 +265,12 @@ std::string GraphSpec::dump(int indent) const
             entry["params"][key] = value;
         }
         entry["ui"] = {{"x", node.ui_x}, {"y", node.ui_y}};
+        if (node.ui_width > 0.0F) {
+            entry["ui"]["width"] = node.ui_width;
+        }
+        if (node.ui_height > 0.0F) {
+            entry["ui"]["height"] = node.ui_height;
+        }
         root["nodes"].push_back(std::move(entry));
     }
 

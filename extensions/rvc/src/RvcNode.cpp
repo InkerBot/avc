@@ -816,7 +816,7 @@ AVC_PLUGIN_MAIN(plugin)
         g_default_model = plugin.dataDir() + "/models/default.avcrvc";
     }
     plugin.author("avc")
-        .describe("Native Linux RVC inference through ONNX Runtime with a bundled offline PTH importer.")
+        .describe("Native RVC inference through ONNX Runtime with a bundled offline PTH importer.")
         .pathSetting("default_model", g_default_model, "Default model",
                      "Server-side .avcrvc model package used when a node path is empty.")
         .enumSetting("provider", {"auto", "cpu", "cuda"}, "auto", "Execution provider",

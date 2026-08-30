@@ -1,6 +1,9 @@
 build/
 build-*/
 cmake-build-*/
+dist/
+.pnpm-store/
+packaging/redist/
 .idea/
 .cache/
 __pycache__/

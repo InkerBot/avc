@@ -40,6 +40,9 @@ std::filesystem::path makeIndex()
 
 TEST(RvcFeatureIndex, LoadsSearchesAndBlendsAnIvfFlatStore)
 {
+#ifdef _WIN32
+    GTEST_SKIP() << "RVC feature indexes currently support Linux only";
+#endif
     const auto path = makeIndex();
     std::string error;
     auto index = avc::rvc::FeatureIndex::load(path, 2, error);
@@ -59,6 +62,9 @@ TEST(RvcFeatureIndex, LoadsSearchesAndBlendsAnIvfFlatStore)
 
 TEST(RvcFeatureIndex, RejectsAModelDimensionMismatch)
 {
+#ifdef _WIN32
+    GTEST_SKIP() << "RVC feature indexes currently support Linux only";
+#endif
     const auto path = makeIndex();
     std::string error;
     EXPECT_EQ(avc::rvc::FeatureIndex::load(path, 768, error), nullptr);

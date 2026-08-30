@@ -20,7 +20,9 @@ import {
   type SpecDomain,
   type SpecNode,
   type Telemetry,
+  type TextTelemetry,
 } from './api'
+import { extensionRuntime } from './extensions/runtime'
 
 export interface AvcNodeData extends Record<string, unknown> {
   type: string
@@ -117,6 +119,8 @@ function specToFlow(spec: GraphSpec): { nodes: AvcNode[]; edges: Edge[] } {
       id: n.id,
       type: 'avc',
       position: { x: n.ui?.x ?? 0, y: n.ui?.y ?? 0 },
+      width: n.ui?.width,
+      height: n.ui?.height,
       data: {
         type: n.type,
         params,
@@ -150,11 +154,18 @@ function flowToSpec(
       if (value) params[key] = value
     })
 
+    const ui: SpecNode['ui'] = {
+      x: Math.round(n.position.x),
+      y: Math.round(n.position.y),
+    }
+    if (n.width !== undefined && n.width > 0) ui.width = Math.round(n.width)
+    if (n.height !== undefined && n.height > 0) ui.height = Math.round(n.height)
+
     const node: SpecNode = {
       id: n.id,
       type: n.data.type,
       params,
-      ui: { x: Math.round(n.position.x), y: Math.round(n.position.y) },
+      ui,
     }
     if (n.data.inputs) node.inputs = n.data.inputs
     if (n.data.outputs) node.outputs = n.data.outputs
@@ -180,6 +191,71 @@ function flowToSpec(
 
 export type View = 'editor' | 'extensions'
 
+export interface TextMessage {
+  id: string
+  text: string
+  revision: number
+  final: boolean
+}
+
+export interface TextConversation {
+  history: TextMessage[]
+  draft: TextMessage | null
+}
+
+const MAX_TEXT_HISTORY = 200
+
+function upsertHistory(history: TextMessage[], message: TextMessage): TextMessage[] {
+  const at = history.findIndex((entry) => entry.id === message.id)
+  const next = at < 0
+    ? [...history, message]
+    : history.map((entry, index) => index === at ? message : entry)
+  return next.length > MAX_TEXT_HISTORY ? next.slice(-MAX_TEXT_HISTORY) : next
+}
+
+export function updateTextConversation(
+  previous: TextConversation | undefined,
+  update: TextTelemetry | string,
+): TextConversation {
+  const conversation = previous ?? { history: [], draft: null }
+  if (typeof update === 'string' || !update.stream || update.segment <= 0) {
+    const text = typeof update === 'string' ? update : update.text
+    return {
+      history: conversation.history,
+      draft: text ? { id: 'plain', text, revision: 0, final: false } : null,
+    }
+  }
+
+  const id = `${update.stream}:${update.segment}`
+  const message: TextMessage = {
+    id,
+    text: update.text,
+    revision: update.revision,
+    final: update.final,
+  }
+  const completed = conversation.history.find((entry) => entry.id === id)
+  if (completed && completed.revision > message.revision) return conversation
+
+  let history = conversation.history
+  if (conversation.draft && conversation.draft.id !== id) {
+    history = upsertHistory(history, { ...conversation.draft, final: false })
+  }
+
+  if (message.final) {
+    if (message.text) history = upsertHistory(history, message)
+    return {
+      history,
+      draft: conversation.draft?.id === id ? null : conversation.draft,
+    }
+  }
+
+  // Do not let a delayed partial frame turn an already-final message back into a draft.
+  if (completed?.final && completed.revision >= message.revision) {
+    return { history, draft: conversation.draft?.id === id ? null : conversation.draft }
+  }
+  return { history, draft: message }
+}
+
 interface State {
   view: View
   descriptors: Record<string, NodeDescriptor>
@@ -199,10 +275,12 @@ interface State {
   telemetry: Telemetry | null
 
   scopes: Record<string, { wave: number[]; bands: number[] }>
+  texts: Record<string, TextConversation>
   selected: string | null
 
   setView: (view: View) => void
   load: () => Promise<void>
+  refreshAudioDevices: () => Promise<void>
   refreshDescriptors: () => Promise<void>
   apply: () => Promise<void>
   revert: () => Promise<void>
@@ -218,6 +296,7 @@ interface State {
   canConnect: (connection: Connection | Edge) => boolean
   onConnect: (connection: Connection) => void
   select: (id: string | null) => void
+  clearTextHistory: (id: string) => void
   setTelemetry: (t: Telemetry) => void
   setProfiling: (on: boolean) => Promise<void>
   resetStats: () => Promise<void>
@@ -231,9 +310,10 @@ interface State {
   selectExtension: (key: string | null) => void
   setExtensionEnabled: (key: string, enabled: boolean) => Promise<void>
   saveExtensionSettings: (key: string, values: Record<string, string>) => Promise<void>
-  installExtension: (file: File) => Promise<void>
+  chooseExtension: () => Promise<void>
   deleteExtension: (key: string) => Promise<void>
   restartEngine: () => Promise<void>
+  forceRestartEngine: () => Promise<void>
 }
 
 let nextId = 1
@@ -256,9 +336,14 @@ export const useStore = create<State>((set, get) => ({
   error: null,
   telemetry: null,
   scopes: {},
+  texts: {},
   selected: null,
 
   setView: (view) => set({ view }),
+
+  refreshAudioDevices: async () => {
+    set({ audioDevices: await api.audioDevices() })
+  },
 
   refreshDescriptors: async () => {
     const descriptors = await api.descriptors()
@@ -270,11 +355,13 @@ export const useStore = create<State>((set, get) => ({
   },
 
   load: async () => {
-    const [descriptors, graph, audioDevices] = await Promise.all([
+    const [descriptors, graph, audioDevices, extensions] = await Promise.all([
       api.descriptors(),
       api.graph(),
       api.audioDevices(),
+      api.extensions(),
     ])
+    void extensionRuntime.sync(extensions)
     const byType: Record<string, NodeDescriptor> = {}
     descriptors.forEach((d) => (byType[d.type] = d))
     const { nodes, edges } = specToFlow(graph.spec)
@@ -282,15 +369,16 @@ export const useStore = create<State>((set, get) => ({
       descriptors: byType,
       palette: descriptors,
       audioDevices,
+      extensions,
       nodes,
       edges,
       domains: graph.spec.domains ?? {},
       dirty: false,
       error: null,
       scopes: {},
+      texts: {},
     })
     void get().refreshPresets()
-    void get().refreshExtensions()
   },
 
   apply: async () => {
@@ -424,12 +512,13 @@ export const useStore = create<State>((set, get) => ({
   onNodesChange: (changes) => {
     const structural = changes.some((c) => c.type === 'add' || c.type === 'remove')
     const moved = changes.some((c) => c.type === 'position' && c.dragging === false)
+    const resized = changes.some((c) => c.type === 'dimensions' && c.resizing === false)
     set((s) => {
       const nodes = applyNodeChanges(changes, s.nodes)
       return {
         nodes,
         domains: structural ? pruneDomains(s.domains, nodes) : s.domains,
-        dirty: s.dirty || structural || moved,
+        dirty: s.dirty || structural || moved || resized,
       }
     })
   },
@@ -462,18 +551,39 @@ export const useStore = create<State>((set, get) => ({
 
   select: (id) => set({ selected: id }),
 
+  clearTextHistory: (id) => set((s) => {
+    const conversation = s.texts[id]
+    if (!conversation || conversation.history.length === 0) return s
+    return {
+      texts: {
+        ...s.texts,
+        [id]: { history: [], draft: conversation.draft },
+      },
+    }
+  }),
+
   setTelemetry: (telemetry) => {
     const before = get().telemetry?.engine
+    const scopes = telemetry.scopes ?? {}
+    const texts = telemetry.texts ?? {}
     if (before !== undefined && before !== 'up' && telemetry.engine === 'up') {
       void get().refreshDescriptors()
     }
-    set((s) => ({
-      telemetry,
-      scopes:
-        Object.keys(telemetry.scopes).length === 0
-          ? s.scopes
-          : { ...s.scopes, ...telemetry.scopes },
-    }))
+    set((s) => {
+      let conversations = s.texts
+      for (const [id, update] of Object.entries(texts)) {
+        if (conversations === s.texts) conversations = { ...s.texts }
+        conversations[id] = updateTextConversation(conversations[id], update)
+      }
+      return {
+        telemetry,
+        scopes:
+          Object.keys(scopes).length === 0
+            ? s.scopes
+            : { ...s.scopes, ...scopes },
+        texts: conversations,
+      }
+    })
   },
 
   setProfiling: async (on) => {
@@ -505,19 +615,25 @@ export const useStore = create<State>((set, get) => ({
   },
 
   refreshExtensions: async () => {
-    set({ extensions: await api.extensions() })
+    const extensions = await api.extensions()
+    void extensionRuntime.sync(extensions)
+    set({ extensions })
   },
 
   selectExtension: (key) => set({ selectedExtension: key }),
 
   rescanExtensions: async () => {
-    set({ extensions: await api.rescanExtensions(), extensionError: null })
+    const extensions = await api.rescanExtensions()
+    void extensionRuntime.sync(extensions)
+    set({ extensions, extensionError: null })
   },
 
   setExtensionEnabled: async (key, enabled) => {
     set({ extensionsBusy: true, extensionError: null })
     try {
-      set({ extensions: await api.setExtensionEnabled(key, enabled) })
+      const extensions = await api.setExtensionEnabled(key, enabled)
+      void extensionRuntime.sync(extensions)
+      set({ extensions })
     } catch (err) {
       set({ extensionError: (err as Error).message })
     } finally {
@@ -529,7 +645,9 @@ export const useStore = create<State>((set, get) => ({
     set({ extensionsBusy: true, extensionError: null })
     try {
       await api.saveExtensionSettings(key, values)
-      set({ extensions: await api.extensions() })
+      const extensions = await api.extensions()
+      void extensionRuntime.sync(extensions)
+      set({ extensions })
     } catch (err) {
       set({ extensionError: (err as Error).message })
     } finally {
@@ -537,10 +655,14 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  installExtension: async (file) => {
+  chooseExtension: async () => {
     set({ extensionsBusy: true, extensionError: null })
     try {
-      set({ extensions: await api.installExtension(file) })
+      const extensions = await api.chooseExtension()
+      if (extensions) {
+        void extensionRuntime.sync(extensions)
+        set({ extensions })
+      }
     } catch (err) {
       set({ extensionError: (err as Error).message })
     } finally {
@@ -551,7 +673,9 @@ export const useStore = create<State>((set, get) => ({
   deleteExtension: async (key) => {
     set({ extensionsBusy: true, extensionError: null })
     try {
-      set({ extensions: await api.deleteExtension(key), selectedExtension: null })
+      const extensions = await api.deleteExtension(key)
+      void extensionRuntime.sync(extensions)
+      set({ extensions, selectedExtension: null })
     } catch (err) {
       set({ extensionError: (err as Error).message })
     } finally {
@@ -561,5 +685,9 @@ export const useStore = create<State>((set, get) => ({
 
   restartEngine: async () => {
     await api.restartEngine()
+  },
+
+  forceRestartEngine: async () => {
+    await api.forceRestartEngine()
   },
 }))

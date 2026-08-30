@@ -30,7 +30,12 @@ struct Options {
     std::string http_bind = "127.0.0.1";
     std::string ui_dir;
     int http_port = 7420;
+#ifdef _WIN32
+    bool no_http = true;
+    bool desktop = true;
+#else
     bool no_http = false;
+#endif
 
     std::intptr_t engine_read_handle = -1;
     std::intptr_t engine_write_handle = -1;
@@ -51,6 +56,10 @@ struct Options {
     bool list_devices = false;
     bool list_nodes = false;
     bool help = false;
+#ifdef _WIN32
+    std::string usbip_operation;
+    std::string usbip_buses;
+#endif
 };
 
 bool parseOptions(int argc, char **argv, Options &out);

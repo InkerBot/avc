@@ -19,6 +19,8 @@ endif()
 # x86-64 baseline, which already has SSE2 and is enough for the DSP nodes.
 set(AVC_CPU_TARGET "none" CACHE STRING "-march target; 'none' keeps compiler defaults")
 option(AVC_BUILD_TESTS "Build unit tests" ON)
+option(AVC_BUNDLE_USBIP_DRIVER_INSTALLER
+    "Download and bundle the signed usbip-win2 installer on Windows x64" ON)
 
 include(cmake/Dependencies.cmake)
 
@@ -57,6 +59,7 @@ add_library(avc_dsp STATIC
     src/node/fx/RingModNode.cpp
     src/node/debug/SignalNode.cpp
     src/node/debug/ScopeNode.cpp
+    src/node/debug/TextNode.cpp
     src/node/debug/AbNode.cpp
     src/dsp/Biquad.cpp
     src/graph/BufferPool.cpp
@@ -102,9 +105,11 @@ endif()
 
 if(WIN32)
     set(AVC_AUDIO_SOURCES
+        src/audio/UsbIpAudio.cpp
         src/audio/WasapiSession.cpp
         src/audio/WasapiVirtualDevices.cpp
         src/audio/WasapiBackend.cpp)
+    set(AVC_DESKTOP_SOURCES src/control/DesktopHost.cpp)
 else()
     set(AVC_AUDIO_SOURCES
         src/audio/PwRegistry.cpp
@@ -121,6 +126,7 @@ add_executable(avc
     src/control/ExtensionStore.cpp
     src/control/RvcModelManager.cpp
     src/control/ControlPlane.cpp
+    ${AVC_DESKTOP_SOURCES}
     src/audio/AudioBackend.cpp
     ${AVC_AUDIO_SOURCES}
     src/app/Ipc.cpp
@@ -132,9 +138,78 @@ add_executable(avc
 )
 target_link_libraries(avc PRIVATE avc_dsp httplib::httplib)
 if(WIN32)
+    set(AVC_WEBVIEW2_VERSION "1.0.4191.47" CACHE STRING "WebView2 SDK version")
+    FetchContent_Declare(webview2_sdk
+        URL "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/${AVC_WEBVIEW2_VERSION}"
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(webview2_sdk)
+
+    if(CMAKE_GENERATOR_PLATFORM MATCHES "[Aa][Rr][Mm]64"
+       OR CMAKE_SYSTEM_PROCESSOR MATCHES "[Aa][Rr][Mm]64")
+        set(AVC_WEBVIEW2_ARCH arm64)
+    elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(AVC_WEBVIEW2_ARCH x64)
+    else()
+        set(AVC_WEBVIEW2_ARCH x86)
+    endif()
+
+    add_library(avc_webview2_loader STATIC IMPORTED)
+    set_target_properties(avc_webview2_loader PROPERTIES
+        IMPORTED_LOCATION
+            "${webview2_sdk_SOURCE_DIR}/build/native/${AVC_WEBVIEW2_ARCH}/WebView2LoaderStatic.lib"
+        INTERFACE_INCLUDE_DIRECTORIES "${webview2_sdk_SOURCE_DIR}/build/native/include")
+
     target_include_directories(avc PRIVATE ${miniaudio_SOURCE_DIR})
-    target_compile_definitions(avc PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_link_libraries(avc PRIVATE ws2_32 avrt)
+    target_compile_definitions(avc PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX WEBVIEW2_STATIC)
+    target_link_libraries(avc PRIVATE avc_webview2_loader ws2_32 avrt shell32 ole32 oleaut32
+        mmdevapi windowsapp version user32 gdi32 dwmapi bcrypt)
+
+    # usbip-win2 publishes a signed x64 installer. Pin both the release and its
+    # official GitHub asset digest: this is a kernel driver, so silently taking
+    # a newer or changed binary would be an unacceptable build-time surprise.
+    if(AVC_BUNDLE_USBIP_DRIVER_INSTALLER)
+        set(AVC_USBIP_VERSION "0.9.7.7")
+        if(AVC_WEBVIEW2_ARCH STREQUAL "x64")
+            set(AVC_USBIP_INSTALLER_NAME "USBip-${AVC_USBIP_VERSION}-x64.exe")
+            set(AVC_USBIP_INSTALLER_SHA256
+                "51620fa5f9f8be5932bc9d786deee557ce06d5407a99cab490dcfac71f185fea")
+            set(AVC_USBIP_INSTALLER_URL
+                "https://github.com/vadimgrn/usbip-win2/releases/download/v.${AVC_USBIP_VERSION}/${AVC_USBIP_INSTALLER_NAME}")
+            set(AVC_USBIP_DOWNLOAD_DIR "${CMAKE_CURRENT_BINARY_DIR}/downloads")
+            set(AVC_USBIP_INSTALLER
+                "${AVC_USBIP_DOWNLOAD_DIR}/${AVC_USBIP_INSTALLER_NAME}")
+            file(MAKE_DIRECTORY "${AVC_USBIP_DOWNLOAD_DIR}")
+
+            set(_avc_usbip_download TRUE)
+            if(EXISTS "${AVC_USBIP_INSTALLER}")
+                file(SHA256 "${AVC_USBIP_INSTALLER}" _avc_usbip_existing_sha256)
+                if(_avc_usbip_existing_sha256 STREQUAL AVC_USBIP_INSTALLER_SHA256)
+                    set(_avc_usbip_download FALSE)
+                endif()
+            endif()
+            if(_avc_usbip_download)
+                file(DOWNLOAD "${AVC_USBIP_INSTALLER_URL}" "${AVC_USBIP_INSTALLER}"
+                    EXPECTED_HASH "SHA256=${AVC_USBIP_INSTALLER_SHA256}"
+                    TLS_VERIFY ON
+                    SHOW_PROGRESS)
+            endif()
+
+            target_compile_definitions(avc PRIVATE
+                AVC_USBIP_INSTALLER_NAME="${AVC_USBIP_INSTALLER_NAME}"
+                AVC_USBIP_INSTALLER_SHA256="${AVC_USBIP_INSTALLER_SHA256}")
+            add_custom_command(TARGET avc POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "$<TARGET_FILE_DIR:avc>/drivers"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${AVC_USBIP_INSTALLER}"
+                    "$<TARGET_FILE_DIR:avc>/drivers/${AVC_USBIP_INSTALLER_NAME}"
+                COMMENT "Bundling the signed usbip-win2 driver installer")
+        else()
+            message(WARNING
+                "usbip-win2 ${AVC_USBIP_VERSION} has no official ${AVC_WEBVIEW2_ARCH} installer; "
+                "AVC will be built without the bundled USB/IP driver installer")
+        endif()
+    endif()
 else()
     target_link_libraries(avc PRIVATE PkgConfig::PIPEWIRE)
 endif()
@@ -150,12 +225,18 @@ if(AVC_BUILD_EXAMPLE_EXT)
     add_subdirectory(examples/ext)
 endif()
 
-option(AVC_BUILD_RVC_EXT "Build the native Linux RVC extension" OFF)
+option(AVC_BUILD_RVC_EXT "Build the native RVC extension" OFF)
 if(AVC_BUILD_RVC_EXT)
-    if(WIN32 OR APPLE)
-        message(FATAL_ERROR "AVC_BUILD_RVC_EXT currently supports Linux only")
+    if(APPLE)
+        message(FATAL_ERROR "AVC_BUILD_RVC_EXT currently supports Linux and Windows")
     endif()
     add_subdirectory(extensions/rvc)
+endif()
+
+option(AVC_BUILD_QWEN_LIVETRANSLATE_EXT
+    "Build the Qwen realtime speech and interpretation extension" OFF)
+if(AVC_BUILD_QWEN_LIVETRANSLATE_EXT)
+    add_subdirectory(extensions/qwen-livetranslate)
 endif()
 
 if(AVC_BUILD_TESTS)
@@ -199,13 +280,39 @@ if(AVC_BUILD_TESTS)
     avc_add_test(rvc_model_manager_test
         tests/rvc_model_manager_test.cpp
         src/control/RvcModelManager.cpp)
+
+    avc_add_test(qwen_livetranslate_test
+        tests/qwen_livetranslate_test.cpp
+        extensions/qwen-livetranslate/src/AudioResampler.cpp
+        extensions/qwen-livetranslate/src/Protocol.cpp)
+    target_include_directories(qwen_livetranslate_test PRIVATE
+        extensions/qwen-livetranslate/include)
+    if(TARGET avc_qwen_livetranslate)
+        add_dependencies(qwen_livetranslate_test avc_qwen_livetranslate)
+        target_compile_definitions(qwen_livetranslate_test PRIVATE
+            AVC_QWEN_PLUGIN_PATH="$<TARGET_FILE:avc_qwen_livetranslate>")
+    endif()
 endif()
 
 include(GNUInstallDirs)
 install(TARGETS avc RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY include/avc DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES third_party/Virtual-Cables-LICENSE.txt
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/avc/licenses)
 if(WIN32)
     install(DIRECTORY DESTINATION ${CMAKE_INSTALL_BINDIR}/extensions)
+    if(AVC_USBIP_INSTALLER)
+        install(FILES "${AVC_USBIP_INSTALLER}"
+                DESTINATION ${CMAKE_INSTALL_BINDIR}/drivers)
+        install(FILES third_party/USBIP-WIN2-LICENSE.txt
+                DESTINATION ${CMAKE_INSTALL_DATADIR}/avc/licenses)
+    endif()
+    install(FILES "${webview2_sdk_SOURCE_DIR}/LICENSE.txt"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/avc/licenses
+            RENAME WebView2-LICENSE.txt)
+    install(FILES "${webview2_sdk_SOURCE_DIR}/NOTICE.txt"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/avc/licenses
+            RENAME WebView2-NOTICE.txt)
 else()
     install(DIRECTORY DESTINATION ${CMAKE_INSTALL_LIBDIR}/avc/extensions)
 endif()

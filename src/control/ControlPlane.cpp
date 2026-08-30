@@ -164,6 +164,27 @@ void ControlPlane::registerRoutes()
         res.status = 204;
     });
 
+    server_->Post("/api/engine/restart/force",
+                  [this](const httplib::Request &, httplib::Response &res) {
+                      daemon_.requestForceRestart();
+                      res.status = 204;
+                  });
+
+    server_->Get("/api/usbip/driver",
+                 [this](const httplib::Request &, httplib::Response &res) {
+                     sendJson(res, daemon_.usbIpDriverStatus());
+                 });
+
+    server_->Post("/api/usbip/driver/install",
+                  [this](const httplib::Request &, httplib::Response &res) {
+                      std::string error;
+                      if (!daemon_.installUsbIpDriver(error)) {
+                          sendError(res, 400, error);
+                          return;
+                      }
+                      sendJson(res, daemon_.usbIpDriverStatus());
+                  });
+
     registerGraphRoutes();
     registerPresetRoutes();
     registerExtensionRoutes();

@@ -58,6 +58,7 @@ export function DevicePicker({
   onChange: (name: string) => void
 }) {
   const devices = useStore((s) => s.audioDevices)
+  const refreshAudioDevices = useStore((s) => s.refreshAudioDevices)
   const nodes = useStore((s) => s.nodes)
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -122,17 +123,21 @@ export function DevicePicker({
 
   const selected = rows.find((r) => r.device.name === value)
   const following = value.startsWith('@')
+  const unavailable = Boolean(value && !following && !selected)
 
   return (
     <div className="picker" ref={box}>
       <button
         type="button"
-        className={`picker__trigger${value ? '' : ' picker__trigger--empty'}`}
+        className={`picker__trigger${value ? '' : ' picker__trigger--empty'}${unavailable ? ' picker__trigger--gone' : ''}`}
         onClick={() => {
+          if (!open) void refreshAudioDevices()
           setOpen((v) => !v)
           setFilter('')
         }}
         aria-expanded={open}
+        aria-invalid={unavailable}
+        title={unavailable ? t('picker.notHere') : undefined}
       >
         <span className="picker__face">
           {following ? (

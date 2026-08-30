@@ -226,12 +226,22 @@ bool parseOptions(int argc, char **argv, Options &out)
             out.log_level = value;
         } else if (matchValue(arg, "--port", value)) {
             out.http_port = static_cast<int>(toU32(value));
+            out.no_http = false;
         } else if (matchValue(arg, "--bind", value)) {
             out.http_bind = value;
+            out.no_http = false;
         } else if (matchValue(arg, "--ui-dir", value)) {
             out.ui_dir = value;
+        } else if (arg == "--http") {
+            out.no_http = false;
         } else if (arg == "--no-http") {
             out.no_http = true;
+#ifdef _WIN32
+        } else if (arg == "--desktop") {
+            out.desktop = true;
+        } else if (arg == "--no-desktop") {
+            out.desktop = false;
+#endif
         } else if (arg == "--no-restore") {
             out.no_restore = true;
         } else if (arg == "--list-extensions") {
@@ -255,6 +265,12 @@ bool parseOptions(int argc, char **argv, Options &out)
         } else if (matchValue(arg, "--engine-write-handle", value)) {
             out.engine_write_handle = static_cast<std::intptr_t>(
                 std::strtoull(std::string(value).c_str(), nullptr, 10));
+#ifdef _WIN32
+        } else if (matchValue(arg, "--usbip-operation", value)) {
+            out.usbip_operation = value;
+        } else if (matchValue(arg, "--usbip-buses", value)) {
+            out.usbip_buses = value;
+#endif
         } else if (matchValue(arg, "--in-channels", value)) {
             out.in_channels = toU32(value);
         } else if (matchValue(arg, "--out-channels", value)) {
@@ -300,10 +316,15 @@ void printUsage()
         "  --rate=HZ              sample rate (default 48000)\n"
         "  --quantum=FRAMES       block size (default 128 = 2.67 ms)\n"
         "  --force-quantum        force the graph quantum instead of requesting it\n"
-        "  --port=N               control plane port (default 7420)\n"
-        "  --bind=ADDR            control plane address (default 127.0.0.1)\n"
-        "  --ui-dir=DIR           serve the editor from here instead of the built-in copy\n"
-        "  --no-http              run headless, no control plane\n"
+#ifdef _WIN32
+        "  --desktop              open the native WebView2 editor (Windows default)\n"
+        "  --no-desktop           do not open the native editor\n"
+#endif
+        "  --http                 also enable the optional HTTP control plane\n"
+        "  --port=N               HTTP control plane port (implies --http; default 7420)\n"
+        "  --bind=ADDR            HTTP bind address (implies --http; default 127.0.0.1)\n"
+        "  --ui-dir=DIR           load editor files from here instead of the built-in copy\n"
+        "  --no-http              disable the optional HTTP control plane\n"
         "  --no-restore           start from the built-in graph, not the last one that ran\n"
         "  --list-extensions      list the extensions found, and what they offer, then exit\n"
         "  --extension-dir=DIR    look here for extensions first; may be given more than once\n"

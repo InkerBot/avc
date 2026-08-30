@@ -80,20 +80,95 @@ void onUiRequest(const AvcUiRequest *request)
 }
 
 const char *const kEditorModule = R"JS(
+const translations = {
+  'zh-CN': {
+    name: '示例效果',
+    description: '扩展 ABI 的颤音效果示例。',
+    category: { fx: '效果' },
+    settings: {
+      max_rate_hz: {
+        name: '最高速率',
+        description: '超过约 20 Hz 后，颤音会逐渐变成环形调制。',
+      },
+    },
+    nodes: {
+      tremolo: {
+        label: '颤音',
+        ports: { in: '输入', out: '输出' },
+        params: {
+          rate_hz: { name: '速率', description: '音量每秒起伏的次数。' },
+          depth: { name: '深度', description: '音量起伏最低点的衰减幅度。' },
+        },
+      },
+      level: { label: '电平', ports: { in: '输入', out: '输出', said: '读数' } },
+    },
+    presets: { 'Tremolo mic': '麦克风颤音' },
+    ui: {
+      title: '示例扩展设置',
+      fastestRate: '最高速率（Hz）',
+      save: '保存并重启引擎',
+      saving: '正在保存…',
+      saved: '已保存',
+      ownedBy: '此控件由 {{name}} 提供。',
+    },
+  },
+  'en-US': {
+    name: 'Example effects',
+    description: 'A tremolo effect demonstrating the extension ABI.',
+    category: { fx: 'Effects' },
+    settings: {
+      max_rate_hz: {
+        name: 'Maximum rate',
+        description: 'Above about 20 Hz, tremolo starts to become ring modulation.',
+      },
+    },
+    nodes: {
+      tremolo: {
+        label: 'Tremolo',
+        ports: { in: 'Input', out: 'Output' },
+        params: {
+          rate_hz: { name: 'Rate', description: 'How often the volume sweeps up and down.' },
+          depth: { name: 'Depth', description: 'How far the volume ducks at the bottom.' },
+        },
+      },
+      level: { label: 'Level', ports: { in: 'Input', out: 'Output', said: 'Reading' } },
+    },
+    presets: { 'Tremolo mic': 'Tremolo microphone' },
+    ui: {
+      title: 'Example extension settings',
+      fastestRate: 'Maximum rate (Hz)',
+      save: 'Save and restart engine',
+      saving: 'Saving…',
+      saved: 'Saved',
+      ownedBy: 'This control is provided by {{name}}.',
+    },
+  },
+}
+
 class ExampleSettings extends HTMLElement {
   connectedCallback() {
+    this.stopLanguage = this.avcContext.i18n.onLanguageChanged(() => this.render())
+    this.render()
+  }
+
+  disconnectedCallback() {
+    this.stopLanguage?.()
+  }
+
+  render() {
     const context = this.avcContext
+    const t = (key, options) => context.i18n.t(key, options)
     const values = context.settings.get()
     const section = document.createElement('section')
     section.className = 'panel'
     const title = document.createElement('h2')
     title.className = 'panel__title'
-    title.textContent = 'Example extension settings'
+    title.textContent = t('ui.title')
     const label = document.createElement('label')
     label.className = 'field'
     const name = document.createElement('span')
     name.className = 'field__name'
-    name.textContent = 'Fastest rate (Hz)'
+    name.textContent = t('ui.fastestRate')
     const input = document.createElement('input')
     input.type = 'number'
     input.min = '1'
@@ -102,16 +177,16 @@ class ExampleSettings extends HTMLElement {
     label.append(name, input)
     const save = document.createElement('button')
     save.className = 'button button--primary'
-    save.textContent = 'Save and restart engine'
+    save.textContent = t('ui.save')
     const status = document.createElement('span')
     status.setAttribute('role', 'status')
     status.className = 'hint'
     save.addEventListener('click', async () => {
       save.disabled = true
-      status.textContent = 'Saving…'
+      status.textContent = t('ui.saving')
       try {
         await context.settings.save({ ...values, max_rate_hz: input.value })
-        status.textContent = 'Saved'
+        status.textContent = t('ui.saved')
       } catch (error) {
         status.textContent = error instanceof Error ? error.message : String(error)
       } finally {
@@ -125,14 +200,26 @@ class ExampleSettings extends HTMLElement {
 
 class TremoloInspector extends HTMLElement {
   connectedCallback() {
+    this.stopLanguage = this.avcContext.i18n.onLanguageChanged(() => this.render())
+    this.render()
+  }
+
+  disconnectedCallback() {
+    this.stopLanguage?.()
+  }
+
+  render() {
     const text = document.createElement('p')
     text.className = 'hint'
-    text.textContent = `This control is owned by ${this.avcContext.extension.name}.`
+    text.textContent = this.avcContext.i18n.t('ui.ownedBy', {
+      name: this.avcContext.i18n.t('name'),
+    })
     this.replaceChildren(text)
   }
 }
 
 export function activate(api) {
+  api.i18n.addResources(translations)
   if (!customElements.get('avc-example-settings'))
     customElements.define('avc-example-settings', ExampleSettings)
   if (!customElements.get('avc-example-tremolo'))

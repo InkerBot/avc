@@ -2,6 +2,10 @@
 
 #include "app/Application.hpp"
 #include "control/ControlPlane.hpp"
+#ifdef _WIN32
+#include "control/DesktopHost.hpp"
+#include "audio/UsbIpAudio.hpp"
+#endif
 #include "graph/GraphCompiler.hpp"
 #include "log/Log.hpp"
 
@@ -314,18 +318,23 @@ bool Daemon::startEngine()
     return true;
 }
 
-void Daemon::stopEngine() noexcept
+void Daemon::stopEngine(bool force) noexcept
 {
     if (!hasChild()) {
         return;
     }
-    channel_.send(json{{"t", "shutdown"}});
+    if (!force) channel_.send(json{{"t", "shutdown"}});
 
 #ifdef _WIN32
-    const DWORD waited = WaitForSingleObject(static_cast<HANDLE>(child_),
-                                             static_cast<DWORD>(kStopGrace.count()));
+    const DWORD waited = force ? WAIT_TIMEOUT
+                               : WaitForSingleObject(static_cast<HANDLE>(child_),
+                                                     static_cast<DWORD>(kStopGrace.count()));
     if (waited == WAIT_TIMEOUT) {
-        spdlog::warn("engine did not stop on its own; killing pid {}", child_pid_);
+        if (force) {
+            spdlog::warn("force-killing engine pid {}", child_pid_);
+        } else {
+            spdlog::warn("engine did not stop on its own; killing pid {}", child_pid_);
+        }
         TerminateProcess(static_cast<HANDLE>(child_), 1);
         WaitForSingleObject(static_cast<HANDLE>(child_), INFINITE);
     }
@@ -333,18 +342,24 @@ void Daemon::stopEngine() noexcept
     child_ = nullptr;
     child_pid_ = 0;
 #else
-    const auto deadline = std::chrono::steady_clock::now() + kStopGrace;
-    while (std::chrono::steady_clock::now() < deadline) {
-        int status = 0;
-        if (::waitpid(child_, &status, WNOHANG) == child_) {
-            child_ = -1;
-            break;
+    if (!force) {
+        const auto deadline = std::chrono::steady_clock::now() + kStopGrace;
+        while (std::chrono::steady_clock::now() < deadline) {
+            int status = 0;
+            if (::waitpid(child_, &status, WNOHANG) == child_) {
+                child_ = -1;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     if (child_ >= 0) {
-        spdlog::warn("engine did not stop on its own; killing pid {}", child_);
+        if (force) {
+            spdlog::warn("force-killing engine pid {}", child_);
+        } else {
+            spdlog::warn("engine did not stop on its own; killing pid {}", child_);
+        }
         ::kill(child_, SIGKILL);
         int status = 0;
         ::waitpid(child_, &status, 0);
@@ -571,7 +586,8 @@ void Daemon::retireDevices()
     published_.retain(live);
 }
 
-std::vector<audio::VirtualDeviceRequest> Daemon::virtualDevicesFor(const graph::GraphSpec &spec)
+std::vector<audio::VirtualDeviceRequest>
+Daemon::virtualDevicesFor(const graph::GraphSpec &spec) const
 {
     std::vector<audio::IoRequest> requests;
     graph::GraphCompiler::virtualDevices(spec, requests);
@@ -579,7 +595,8 @@ std::vector<audio::VirtualDeviceRequest> Daemon::virtualDevicesFor(const graph::
     std::vector<audio::VirtualDeviceRequest> out;
     out.reserve(requests.size());
     for (const audio::IoRequest &request : requests) {
-        out.push_back({request.node, request.target, request.kind, request.channels});
+        out.push_back({request.node, request.target, request.kind, request.channels,
+                       options_.format.sample_rate});
     }
     return out;
 }
@@ -681,9 +698,56 @@ void Daemon::resetStats()
 
 void Daemon::requestRestart()
 {
-    // A restart somebody asked for is not a crash loop, whatever came before.
-    rapid_failures_ = 0;
-    restart_requested_.store(true, std::memory_order_relaxed);
+    RestartRequest expected = RestartRequest::None;
+    (void)restart_requested_.compare_exchange_strong(
+        expected, RestartRequest::Graceful, std::memory_order_relaxed);
+}
+
+void Daemon::requestForceRestart()
+{
+    // A forced request must never be downgraded by a simultaneous ordinary
+    // restart request from an extension setting change.
+    restart_requested_.store(RestartRequest::Force, std::memory_order_relaxed);
+}
+
+nlohmann::json Daemon::usbIpDriverStatus() const
+{
+#ifdef _WIN32
+    const audio::UsbIpDriverStatus status = audio::queryUsbIpDriverStatus();
+    return json{{"supported", true},
+                {"clientPresent", status.client_present},
+                {"driverReady", status.driver_ready},
+                {"compatible", status.compatible},
+                {"installerAvailable", status.installer_available},
+                {"version", status.version.empty() ? json(nullptr) : json(status.version)},
+                {"error", status.error.empty() ? json(nullptr) : json(status.error)}};
+#else
+    return json{{"supported", false},
+                {"clientPresent", false},
+                {"driverReady", false},
+                {"compatible", false},
+                {"installerAvailable", false},
+                {"version", nullptr},
+                {"error", nullptr}};
+#endif
+}
+
+bool Daemon::installUsbIpDriver(std::string &error, bool trusted_local)
+{
+    const bool loopback = options_.http_bind == "127.0.0.1" || options_.http_bind == "::1"
+                          || options_.http_bind == "localhost";
+    if (!trusted_local && !loopback) {
+        error = "USB/IP driver installation is only allowed from the local desktop or loopback";
+        return false;
+    }
+#ifdef _WIN32
+    if (!audio::installBundledUsbIpDriver(error)) return false;
+    requestForceRestart();
+    return true;
+#else
+    error = "USB/IP driver installation is available only on Windows";
+    return false;
+#endif
 }
 
 graph::GraphSpec Daemon::spec() const
@@ -701,7 +765,44 @@ nlohmann::json Daemon::descriptors() const
 nlohmann::json Daemon::telemetry() const
 {
     const std::lock_guard<std::mutex> lock(mutex_);
-    json out = telemetry_;
+    // Desktop WebView2 starts consuming events immediately, before the child
+    // has necessarily produced its first telemetry frame. Keep the public
+    // shape complete during that interval so every transport sees the same
+    // stable contract instead of a partial {engine, graphError} object.
+    json out{{"cycles", 0},
+             {"xruns", 0},
+             {"quantum", options_.format.quantum},
+             {"sampleRate", options_.format.sample_rate},
+             {"blockMs", 1000.0 * options_.format.quantum / options_.format.sample_rate},
+             {"ioLatencyMs", 0.0},
+             {"graphLatencyFrames", 0},
+             {"graphLatencyMs", 0.0},
+             {"totalLatencyMs", 0.0},
+             {"jitterUs", 0.0},
+             {"dspUs", 0.0},
+             {"dspUsLast", 0.0},
+             {"dspUsAvg", 0.0},
+             {"load", 0.0},
+             {"loadAvg", 0.0},
+             {"profiling", false},
+             {"nodeCost", json::object()},
+             {"nodeLatencyMs", json::object()},
+             {"nodeStatus", json::object()},
+             {"realtime", false},
+             {"generation", 0},
+             {"swaps", 0},
+             {"nodes", 0},
+             {"bufferSlots", 0},
+             {"droppedParams", 0},
+             {"domains", json::array()},
+             {"outputLatencyMs", json::object()},
+             {"meters", json::object()},
+             {"scopes", json::object()},
+             {"texts", json::object()},
+             {"scopeBandsHz", json::array()}};
+    if (telemetry_.is_object()) {
+        for (const auto &[key, value] : telemetry_.items()) out[key] = value;
+    }
     // The engine cannot report whether it is there. Its graph generation is
     // retained from the last telemetry frame while it is restarting.
     out["engine"] = engineStateName(engine_state_);
@@ -883,15 +984,20 @@ bool Daemon::setExtensionSettings(const std::string &key, const nlohmann::json &
 }
 
 bool Daemon::installExtension(const std::string &filename, const std::string &bytes,
-                              std::string &error)
+                              std::string &error, bool trusted_local)
 {
-    if (!uploadAllowed()) {
-        error = "uploading extensions is only allowed on a loopback address, and not with "
-                "--no-extension-upload";
+    if (!trusted_local && !uploadAllowed()) {
+        error = "installing extensions is disabled for this control channel";
         return false;
     }
     const std::lock_guard<std::mutex> lock(ext_mutex_);
     return store_.install(filename, bytes, error);
+}
+
+bool Daemon::installExtensionFromPath(const std::filesystem::path &path, std::string &error)
+{
+    const std::lock_guard<std::mutex> lock(ext_mutex_);
+    return store_.installFile(path, error);
 }
 
 bool Daemon::removeExtension(const std::string &key, std::string &error)
@@ -1095,6 +1201,15 @@ int Daemon::run()
         return 1;
     }
 
+#ifdef _WIN32
+    if (options_.desktop) {
+        desktop_ = std::make_unique<control::DesktopHost>(*this, options_.ui_dir);
+        if (!desktop_->start()) {
+            return 1;
+        }
+    }
+#endif
+
     control::ControlConfig config;
     config.bind = options_.http_bind;
     config.port = options_.http_port;
@@ -1135,10 +1250,15 @@ int Daemon::run()
             }
         }
 
-        if (restart_requested_.exchange(false, std::memory_order_relaxed)) {
-            spdlog::info("restarting the engine");
+        const RestartRequest restart =
+            restart_requested_.exchange(RestartRequest::None, std::memory_order_relaxed);
+        if (restart != RestartRequest::None) {
+            // A restart somebody asked for is not a crash loop, whatever came before.
+            rapid_failures_ = 0;
+            const bool force = restart == RestartRequest::Force;
+            spdlog::info("{}restarting the engine", force ? "force-" : "");
             complained = false;
-            stopEngine();
+            stopEngine(force);
         }
 
         retireDevices();
@@ -1151,6 +1271,13 @@ int Daemon::run()
         control_->stop();
     }
     stopEngine();
+#ifdef _WIN32
+    // Stopping the child also releases any desktop extension RPC waiting for
+    // an engine reply, so the WebView worker can always join promptly.
+    if (desktop_ != nullptr) {
+        desktop_->stop();
+    }
+#endif
     persistIfDirty();
     published_.clear();
     session_.close();

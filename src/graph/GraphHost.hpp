@@ -36,6 +36,16 @@ struct ScopeReading {
     std::vector<float> bands;
 };
 
+struct TextReading {
+    std::string node;
+    std::string text;
+    std::uint64_t stream = 0;
+    std::uint64_t segment = 0;
+    std::uint64_t revision = 0;
+    bool segmented = false;
+    bool final = false;
+};
+
 struct NodeCost {
     std::string node;
     std::uint64_t ns = 0;
@@ -86,6 +96,8 @@ public:
     std::vector<MeterReading> meters();
 
     std::vector<ScopeReading> scopes();
+
+    std::vector<TextReading> texts();
 
     static std::vector<float> scopeBandsHz();
     GraphStats stats() const;

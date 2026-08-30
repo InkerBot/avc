@@ -38,6 +38,8 @@ struct SpecNode {
 
     float ui_x = 0.0F;
     float ui_y = 0.0F;
+    float ui_width = 0.0F;
+    float ui_height = 0.0F;
 };
 
 struct SpecDomain {

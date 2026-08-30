@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useStore } from '../store'
 import { useTranslation } from 'react-i18next'
 
@@ -12,7 +13,23 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
 
 export function StatusBar() {
   const tel = useStore((s) => s.telemetry)
+  const requestForceRestart = useStore((s) => s.forceRestartEngine)
+  const [restarting, setRestarting] = useState(false)
+  const [restartError, setRestartError] = useState<string | null>(null)
   const { t } = useTranslation()
+
+  const forceRestart = async () => {
+    if (!window.confirm(t('status.forceRestartConfirm'))) return
+    setRestarting(true)
+    setRestartError(null)
+    try {
+      await requestForceRestart()
+    } catch (error) {
+      setRestartError((error as Error).message)
+    } finally {
+      setRestarting(false)
+    }
+  }
 
   if (!tel) {
     return (
@@ -56,6 +73,16 @@ export function StatusBar() {
         value={tel.realtime ? t('status.realtime') : t('status.notRealtime')}
         warn={!tel.realtime}
       />
+      <span className="status__spacer" />
+      {restartError && <span className="field__error">{restartError}</span>}
+      <button
+        className="button button--small button--danger"
+        disabled={restarting}
+        title={t('status.forceRestartHint')}
+        onClick={() => void forceRestart()}
+      >
+        {restarting ? t('status.forceRestarting') : t('status.forceRestart')}
+      </button>
     </footer>
   )
 }

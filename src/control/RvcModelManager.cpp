@@ -12,7 +12,15 @@
 #include <system_error>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <sched.h>
 #include <signal.h>
@@ -50,6 +58,43 @@ std::string trim(std::string value)
     return value;
 }
 
+#ifdef _WIN32
+std::filesystem::path currentExecutable()
+{
+    std::wstring path(32768, L'\0');
+    const DWORD size = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (size == 0 || size >= path.size()) return {};
+    path.resize(size);
+    return path;
+}
+
+std::wstring quoteWindowsArgument(std::wstring_view argument)
+{
+    if (argument.find_first_of(L" \t\"") == std::wstring_view::npos)
+        return std::wstring(argument);
+    std::wstring out = L"\"";
+    std::size_t slashes = 0;
+    for (const wchar_t ch : argument) {
+        if (ch == L'\\') {
+            ++slashes;
+            continue;
+        }
+        if (ch == L'\"') {
+            out.append(slashes * 2 + 1, L'\\');
+            out.push_back(L'\"');
+            slashes = 0;
+            continue;
+        }
+        out.append(slashes, L'\\');
+        slashes = 0;
+        out.push_back(ch);
+    }
+    out.append(slashes * 2, L'\\');
+    out.push_back(L'\"');
+    return out;
+}
+#endif
+
 }
 
 RvcModelManager::RvcModelManager(std::filesystem::path data_root, RuntimePaths runtime)
@@ -77,14 +122,22 @@ RvcModelManager::RuntimePaths RvcModelManager::defaultRuntimePaths()
 {
     std::filesystem::path root = envPath("AVC_RVC_CONVERTER_ROOT");
     std::error_code ec;
+#ifdef _WIN32
+    const std::filesystem::path executable = currentExecutable();
+    const char *converter_name = "avc-rvc-convert.exe";
+#else
     const std::filesystem::path executable = std::filesystem::read_symlink("/proc/self/exe", ec);
+    const char *converter_name = "avc-rvc-convert";
+#endif
 #if defined(AVC_RVC_BUILD_CONVERTER_ROOT)
     // Do not let an installed binary accidentally keep using a converter left
     // in the build tree on the packaging machine.
     const std::filesystem::path build_root = AVC_RVC_BUILD_CONVERTER_ROOT;
     const std::filesystem::path build_bin = AVC_RVC_BUILD_BINARY_DIR;
-    if (root.empty() && !ec && executable.parent_path() == build_bin
-        && regular(build_root / "avc-rvc-convert")) {
+    if (root.empty() && !ec
+        && (executable.parent_path() == build_bin
+            || executable.parent_path().parent_path() == build_bin)
+        && regular(build_root / converter_name)) {
         root = build_root;
     }
 #endif
@@ -93,14 +146,14 @@ RvcModelManager::RuntimePaths RvcModelManager::defaultRuntimePaths()
         const std::filesystem::path relative =
             executable.parent_path().parent_path() / AVC_RVC_INSTALL_LIBEXECDIR
             / "avc" / "rvc-converter";
-        if (regular(relative / "avc-rvc-convert")) root = relative;
+        if (regular(relative / converter_name)) root = relative;
     }
 #endif
 #if defined(AVC_RVC_INSTALLED_CONVERTER_ROOT)
     if (root.empty()) root = AVC_RVC_INSTALLED_CONVERTER_ROOT;
 #endif
     return {
-        root / "avc-rvc-convert",
+        root / converter_name,
         root / "base" / "contentvec-v1.onnx",
         root / "base" / "contentvec-v2.onnx",
         root / "base" / "rmvpe.onnx",
@@ -406,11 +459,123 @@ int RvcModelManager::runConverter(const Upload &upload, const std::filesystem::p
                                   std::stop_token stop, std::string &error)
 {
 #ifdef _WIN32
-    (void)upload;
-    (void)output;
-    (void)stop;
-    error = "the bundled RVC converter currently supports Linux only";
-    return 1;
+    SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+    HANDLE read_pipe = nullptr;
+    HANDLE write_pipe = nullptr;
+    if (!CreatePipe(&read_pipe, &write_pipe, &security, 0)) {
+        error = "cannot create converter pipe (Windows error "
+                + std::to_string(GetLastError()) + ")";
+        return 1;
+    }
+    (void)SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0);
+
+    std::vector<std::filesystem::path> arguments{
+        runtime_.converter, "--input", upload.input, "--output", output, "--name", upload.name,
+        "--contentvec-v1", runtime_.contentvec_v1, "--contentvec-v2", runtime_.contentvec_v2,
+        "--rmvpe", runtime_.rmvpe,
+    };
+    if (!upload.index_input.empty()) {
+        arguments.emplace_back("--index");
+        arguments.push_back(upload.index_input);
+    }
+    std::wstring command;
+    for (const auto &argument : arguments) {
+        if (!command.empty()) command.push_back(L' ');
+        command += quoteWindowsArgument(argument.wstring());
+    }
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = write_pipe;
+    startup.hStdError = write_pipe;
+    PROCESS_INFORMATION process{};
+    const std::wstring working_directory = upload.directory.wstring();
+    const BOOL created = CreateProcessW(
+        runtime_.converter.c_str(), command.data(), nullptr, nullptr, TRUE,
+        CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, working_directory.c_str(), &startup,
+        &process);
+    CloseHandle(write_pipe);
+    if (!created) {
+        const DWORD code = GetLastError();
+        CloseHandle(read_pipe);
+        error = "cannot execute converter (Windows error " + std::to_string(code) + ")";
+        return 1;
+    }
+
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    if (job != nullptr) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        limits.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PROCESS_TIME
+            | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+        limits.BasicLimitInformation.PerProcessUserTimeLimit.QuadPart = 600LL * 10000000LL;
+        limits.ProcessMemoryLimit = static_cast<SIZE_T>(4ULL * 1024ULL * 1024ULL * 1024ULL);
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits,
+                                     sizeof(limits))
+            || !AssignProcessToJobObject(job, process.hProcess)) {
+            CloseHandle(job);
+            job = nullptr;
+        }
+    }
+    child_pid_.store(static_cast<int>(process.dwProcessId), std::memory_order_relaxed);
+    (void)ResumeThread(process.hThread);
+    CloseHandle(process.hThread);
+
+    std::string pending;
+    std::array<char, 4096> buffer{};
+    bool cancelled = false;
+    auto consumeLines = [&] {
+        std::size_t newline = 0;
+        while ((newline = pending.find('\n')) != std::string::npos) {
+            std::string line = trim(pending.substr(0, newline));
+            pending.erase(0, newline + 1);
+            const json event = json::parse(line, nullptr, false);
+            if (event.is_object() && event.contains("progress")) {
+                updateProgress(event.value("progress", 0.1F),
+                               event.value("message", std::string{}));
+            } else if (!line.empty()) {
+                error = std::move(line);
+            }
+        }
+    };
+
+    for (;;) {
+        if (stop.stop_requested() && !cancelled) {
+            cancelled = true;
+            (void)TerminateProcess(process.hProcess, 130);
+        }
+        DWORD available = 0;
+        if (PeekNamedPipe(read_pipe, nullptr, 0, nullptr, &available, nullptr) && available > 0) {
+            DWORD count = 0;
+            if (ReadFile(read_pipe, buffer.data(),
+                         std::min<DWORD>(available, static_cast<DWORD>(buffer.size())), &count,
+                         nullptr)
+                && count > 0) {
+                pending.append(buffer.data(), count);
+                consumeLines();
+            }
+            continue;
+        }
+        if (WaitForSingleObject(process.hProcess, 20) == WAIT_OBJECT_0) break;
+    }
+    for (;;) {
+        DWORD count = 0;
+        if (!ReadFile(read_pipe, buffer.data(), static_cast<DWORD>(buffer.size()), &count, nullptr)
+            || count == 0)
+            break;
+        pending.append(buffer.data(), count);
+    }
+    CloseHandle(read_pipe);
+    consumeLines();
+    if (!pending.empty()) error = trim(pending);
+
+    DWORD exit_code = 1;
+    (void)GetExitCodeProcess(process.hProcess, &exit_code);
+    CloseHandle(process.hProcess);
+    if (job != nullptr) CloseHandle(job);
+    return cancelled ? 130 : static_cast<int>(exit_code);
 #else
     int pipefd[2]{-1, -1};
     if (::pipe2(pipefd, O_CLOEXEC) != 0) {

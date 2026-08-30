@@ -1,9 +1,11 @@
 import { useStore } from '../store'
 import { useTranslation } from 'react-i18next'
 import { colorOf } from '../theme'
+import { extensionNodeType, extensionTranslationKey } from '../i18n'
 
 export function Palette() {
   const palette = useStore((s) => s.palette)
+  const extensions = useStore((s) => s.extensions)
   const addNode = useStore((s) => s.addNode)
   const { t } = useTranslation()
 
@@ -15,7 +17,15 @@ export function Palette() {
       {categories.map((category) => (
         <section key={category} className="palette__group">
           <h3 className="palette__category">
-            {t(`category.${category}`, { defaultValue: category })}
+            {t(
+              [
+                `category.${category}`,
+                ...palette
+                  .filter((descriptor) => descriptor.category === category && descriptor.extension)
+                  .map((descriptor) => extensionTranslationKey(descriptor.extension, `category.${category}`)),
+              ],
+              { defaultValue: category },
+            )}
           </h3>
           {palette
             .filter((d) => d.category === category)
@@ -41,8 +51,27 @@ export function Palette() {
                 }
               >
                 <span>
-                  {t(`nodes.${d.type}.label`, { defaultValue: d.label })}
-                  {d.extension && <span className="palette__from">{d.extension}</span>}
+                  {t(
+                    d.extension
+                      ? [
+                          extensionTranslationKey(
+                            d.extension,
+                            `nodes.${extensionNodeType(d.extension, d.type)}.label`,
+                          ),
+                          `nodes.${d.type}.label`,
+                        ]
+                      : `nodes.${d.type}.label`,
+                    { defaultValue: d.label },
+                  )}
+                  {d.extension && (
+                    <span className="palette__from">
+                      {t(extensionTranslationKey(d.extension, 'name'), {
+                        defaultValue:
+                          extensions.find((extension) => extension.id === d.extension)?.name
+                          || d.extension,
+                      })}
+                    </span>
+                  )}
                 </span>
                 <span className="palette__ports">
                   {d.inputs.length}→{d.outputs.length}

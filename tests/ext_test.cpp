@@ -381,6 +381,31 @@ TEST(Extension, TheSdkTextHelpersRoundTrip)
     EXPECT_TRUE(avc::sdk::readText(nullptr).empty());
 }
 
+TEST(Extension, SegmentedTextFramesRemainPlainTextCompatible)
+{
+    std::vector<std::byte> block(avc::sdk::kTextPortTypeBytes, std::byte{0});
+    avc::sdk::writeTextFrame(block.data(), "streaming", 42, 7, 3, false);
+
+    EXPECT_EQ(avc::sdk::readText(block.data()), "streaming");
+    auto frame = avc::sdk::readTextFrame(block.data());
+    ASSERT_TRUE(frame.valid);
+    EXPECT_TRUE(frame.segmented);
+    EXPECT_FALSE(frame.final);
+    EXPECT_EQ(frame.stream, 42U);
+    EXPECT_EQ(frame.segment, 7U);
+    EXPECT_EQ(frame.revision, 3U);
+
+    avc::sdk::writeTextFrame(block.data(), "streaming", 42, 7, 4, true);
+    frame = avc::sdk::readTextFrame(block.data());
+    EXPECT_TRUE(frame.final);
+    EXPECT_EQ(frame.revision, 4U);
+
+    avc::sdk::writeText(block.data(), "plain again");
+    frame = avc::sdk::readTextFrame(block.data());
+    EXPECT_EQ(frame.value, "plain again");
+    EXPECT_FALSE(frame.segmented) << "plain writes invalidate a previous frame footer";
+}
+
 TEST(Extension, RefusesOneBuiltAgainstAnotherAbi)
 {
     ExtensionLoader loader;
@@ -576,6 +601,25 @@ TEST_F(Store, AnUploadArrivesSwitchedOff)
 
     const nlohmann::json described = store.describe(nlohmann::json::array());
     ASSERT_EQ(described.size(), 1U);
+    EXPECT_FALSE(described[0]["enabled"].get<bool>());
+}
+
+TEST_F(Store, ASelectedFileIsInstalledWithoutAnUpload)
+{
+    const std::filesystem::path source = root_ / "selected" / extName("picked");
+    place(source.parent_path(), source.filename().string());
+
+    ExtensionStore store({extra_.string()});
+    std::string error;
+    ASSERT_TRUE(store.installFile(source, error)) << error;
+
+    const std::filesystem::path installed = ExtensionStore::userDirectory() / source.filename();
+    EXPECT_TRUE(std::filesystem::exists(installed));
+    EXPECT_EQ(store.engineManifest()["extensions"].size(), 0U);
+
+    const nlohmann::json described = store.describe(nlohmann::json::array());
+    ASSERT_EQ(described.size(), 1U);
+    EXPECT_EQ(described[0]["path"], installed.string());
     EXPECT_FALSE(described[0]["enabled"].get<bool>());
 }
 
