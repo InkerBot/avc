@@ -1,0 +1,7 @@
+python_release=@_avc_rvc_python_release@
+python_version=@_avc_rvc_python_version@
+python_arch=@_avc_rvc_python_arch@
+python_sha256=@_avc_rvc_python_sha256@
+torch_index=@_avc_rvc_torch_index@
+packages=@_avc_rvc_packages@
+rvc_source_commit=7b284a634667c34103eaaeed972b48ccdb4b893e
