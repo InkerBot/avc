@@ -1,0 +1,43 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "avc",
+  "version-string": "0.1.0",
+  "builtin-baseline": "a1cae005c39be7b18ba319fced856b68d7276271",
+  "dependencies": [
+    {
+      "name": "cpp-httplib",
+      "default-features": false
+    },
+    {
+      "name": "miniaudio",
+      "platform": "windows"
+    },
+    "nlohmann-json",
+    "spdlog",
+    {
+      "name": "webview2",
+      "platform": "windows"
+    }
+  ],
+  "features": {
+    "qwen-livetranslate": {
+      "description": "Build the Qwen realtime speech and interpretation extension",
+      "dependencies": [
+        {
+          "name": "curl",
+          "default-features": false,
+          "features": [
+            "ssl",
+            "websockets"
+          ]
+        }
+      ]
+    },
+    "tests": {
+      "description": "Build the AVC unit tests",
+      "dependencies": [
+        "gtest"
+      ]
+    }
+  }
+}

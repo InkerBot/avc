@@ -513,6 +513,8 @@ protected:
 #ifdef _WIN32
         setEnvironment("APPDATA", (root_ / "cfg").string());
         setEnvironment("LOCALAPPDATA", (root_ / "data").string());
+        // Installed AVC extensions must not leak into this fixture's inventory.
+        setEnvironment("ProgramFiles", (root_ / "program-files").string());
 #else
         setEnvironment("XDG_CONFIG_HOME", (root_ / "cfg").string());
         setEnvironment("XDG_DATA_HOME", (root_ / "data").string());

@@ -23,6 +23,7 @@ USB/IP 驱动不会在安装 AVC 时自动执行。用户应在 AVC 的“音频
 - Windows 10/11 x64；
 - Visual Studio，安装“使用 C++ 的桌面开发”、CMake 和 Windows SDK；
 - Node.js 与 pnpm；
+- vcpkg，并按[项目构建说明](../README.md)设置 `VCPKG_ROOT`；
 - [Inno Setup 7](https://jrsoftware.org/isinfo.php)；
 - 首次配置和下载依赖时可访问互联网。
 
@@ -66,12 +67,12 @@ allowBuilds:
 建议为安装包使用独立构建目录，避免混入 Debug 或测试产物：
 
 ```powershell
-cmake -S . -B build-package -A x64 `
+cmake --preset windows-package `
   -DAVC_BUILD_TESTS=OFF `
   -DAVC_BUILD_QWEN_LIVETRANSLATE_EXT=ON `
   -DAVC_BUNDLE_USBIP_DRIVER_INSTALLER=ON
 
-cmake --build build-package `
+cmake --build build/windows-package `
   --config Release `
   --target avc avc_qwen_livetranslate `
   --parallel
@@ -79,14 +80,14 @@ cmake --build build-package `
 
 `AVC_BUNDLE_USBIP_DRIVER_INSTALLER=ON` 会下载官方 `USBip-0.9.7.7-x64.exe`，在配置阶段验证固定 SHA-256，并在安装阶段将其放入 `bin\drivers`。
 
-如果已有配置正确的 `build-windows` 目录，也可以将上述命令中的 `build-package` 换成 `build-windows`。
+此预设使用 vcpkg manifest 和 `x64-windows-static-md`。首次迁移时不要复用原有的 FetchContent 构建目录。
 
 ## 4. 生成安装暂存目录
 
 安装器脚本当前使用版本 `0.1.0`，对应的暂存目录为 `dist\avc-stage-0.1.0`：
 
 ```powershell
-cmake --install build-package `
+cmake --install build/windows-package `
   --config Release `
   --prefix "C:\完整路径\avc\dist\avc-stage-0.1.0"
 ```
@@ -277,17 +278,17 @@ pnpm install --frozen-lockfile
 pnpm run build
 Set-Location ..
 
-cmake -S . -B build-package -A x64 `
+cmake --preset windows-package `
   -DAVC_BUILD_TESTS=OFF `
   -DAVC_BUILD_QWEN_LIVETRANSLATE_EXT=ON `
   -DAVC_BUNDLE_USBIP_DRIVER_INSTALLER=ON
 
-cmake --build build-package `
+cmake --build build/windows-package `
   --config Release `
   --target avc avc_qwen_livetranslate `
   --parallel
 
-cmake --install build-package `
+cmake --install build/windows-package `
   --config Release `
   --prefix "C:\完整路径\avc\dist\avc-stage-0.1.0"
 

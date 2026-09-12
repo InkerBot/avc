@@ -15,15 +15,18 @@
 
 ## 构建
 
-默认静态编译固定版本的 libcurl；Windows 使用 Schannel，Linux 使用 OpenSSL：
+依赖由根目录的 vcpkg manifest 管理；先按[项目构建说明](../../README.md)
+设置 `VCPKG_ROOT`。启用此扩展会自动选择 curl 的 TLS 与 WebSocket features，
+Windows 使用 Schannel，Linux 使用 OpenSSL。以 Linux 为例：
 
 ```sh
-cmake -S . -B build-qwen -DAVC_BUILD_QWEN_LIVETRANSLATE_EXT=ON
-cmake --build build-qwen --config RelWithDebInfo --target avc_qwen_livetranslate
+cmake --preset linux-x64 -DAVC_BUILD_QWEN_LIVETRANSLATE_EXT=ON
+cmake --build --preset linux-release --target avc_qwen_livetranslate
 ```
 
-Linux 打包环境也可设置 `-DAVC_QWEN_USE_SYSTEM_CURL=ON`，但系统 libcurl 必须不低于
-7.86 且启用了 WebSocket 与 TLS。安装组件名为 `qwen-livetranslate`。
+Windows 使用 `windows-x64` 配置预设和 `windows-release` 构建预设。
+库的静态/动态链接由 vcpkg triplet 决定，原 `AVC_QWEN_USE_SYSTEM_CURL` 选项已移除。
+安装组件名为 `qwen-livetranslate`。
 
 ## 密钥与地址
 

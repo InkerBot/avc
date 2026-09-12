@@ -44,6 +44,7 @@
 - Windows 10/11 x64；
 - Visual Studio C++、Windows SDK 和 CMake；
 - Inno Setup 7；
+- vcpkg，并按[项目构建说明](../README.md)设置 `VCPKG_ROOT`；
 - 首次配置和构建时可以访问 GitHub、Hugging Face、PyTorch 与 PyPI。
 
 主 UI 不需要为扩展包重新构建，但 RVC 扩展必须和目标 AVC 版本使用相同源码和插件 ABI 构建。
@@ -53,7 +54,9 @@
 在仓库根目录运行：
 
 ```powershell
-cmake -S . -B build-rvc-installer -A x64 `
+cmake -S . -B build-vcpkg-rvc-installer -A x64 `
+  "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
   -DAVC_BUILD_TESTS=OFF `
   -DAVC_BUILD_RVC_EXT=ON `
   -DAVC_BUILD_QWEN_LIVETRANSLATE_EXT=OFF `
@@ -65,12 +68,12 @@ cmake -S . -B build-rvc-installer -A x64 `
 
 配置阶段会下载并校验固定版本的 ONNX Runtime、CPython、RVC 转换源码和基础模型。
 
-不要复用主程序的构建目录来切换 RVC/CUDA 选项。使用独立的 `build-rvc-installer` 可以避免 CMake 缓存和主安装包产物互相影响。
+不要复用主程序的构建目录来切换 RVC/CUDA 选项。使用独立的 `build-vcpkg-rvc-installer` 可以避免 CMake 缓存和主安装包产物互相影响。
 
 ## 4. 构建扩展和转换器
 
 ```powershell
-cmake --build build-rvc-installer `
+cmake --build build-vcpkg-rvc-installer `
   --config Release `
   --target avc_rvc `
   --parallel
@@ -83,7 +86,7 @@ cmake --build build-rvc-installer `
 只安装 CMake 的 `rvc` 组件：
 
 ```powershell
-cmake --install build-rvc-installer `
+cmake --install build-vcpkg-rvc-installer `
   --config Release `
   --component rvc `
   --prefix "C:\完整路径\avc\dist\rvc-extension-stage-0.1.0"

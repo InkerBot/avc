@@ -1,0 +1,64 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "vcpkg",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "VCPKG_MANIFEST_MODE": true
+      }
+    },
+    {
+      "name": "windows-x64",
+      "displayName": "Windows x64 (vcpkg, MSVC)",
+      "inherits": "vcpkg",
+      "architecture": "x64",
+      "condition": {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows"},
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+      }
+    },
+    {
+      "name": "windows-package",
+      "displayName": "Windows installer with Qwen extension",
+      "inherits": "windows-x64",
+      "cacheVariables": {
+        "AVC_BUILD_TESTS": false,
+        "AVC_BUILD_EXAMPLE_EXT": false,
+        "AVC_BUILD_QWEN_LIVETRANSLATE_EXT": true,
+        "AVC_BUNDLE_USBIP_DRIVER_INSTALLER": true
+      }
+    },
+    {
+      "name": "linux-x64",
+      "displayName": "Linux x64 (vcpkg, system PipeWire)",
+      "inherits": "vcpkg",
+      "generator": "Ninja Multi-Config",
+      "condition": {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux"},
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-linux"
+      }
+    }
+  ],
+  "buildPresets": [
+    {"name": "windows-debug", "configurePreset": "windows-x64", "configuration": "Debug"},
+    {"name": "windows-release", "configurePreset": "windows-x64", "configuration": "Release"},
+    {"name": "windows-package", "configurePreset": "windows-package", "configuration": "Release"},
+    {"name": "linux-debug", "configurePreset": "linux-x64", "configuration": "Debug"},
+    {"name": "linux-release", "configurePreset": "linux-x64", "configuration": "Release"}
+  ],
+  "testPresets": [
+    {"name": "windows-debug", "configurePreset": "windows-x64", "configuration": "Debug", "output": {"outputOnFailure": true}},
+    {"name": "windows-release", "configurePreset": "windows-x64", "configuration": "Release", "output": {"outputOnFailure": true}},
+    {"name": "linux-debug", "configurePreset": "linux-x64", "configuration": "Debug", "output": {"outputOnFailure": true}},
+    {"name": "linux-release", "configurePreset": "linux-x64", "configuration": "Release", "output": {"outputOnFailure": true}}
+  ]
+}

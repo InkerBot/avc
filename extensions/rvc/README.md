@@ -14,13 +14,21 @@ sources, ContentVec v1/v2 and RMVPE. Direct archives/models have fixed SHA-256
 digests, Python packages have pinned versions, and the RVC source is fixed to a
 commit. Downloads stay in the build cache and conversion itself is offline:
 
+Set up `VCPKG_ROOT` as described in the [project build guide](../../README.md)
+first. Common C++ dependencies are supplied by vcpkg; ONNX Runtime and the
+converter retain their pinned binary/model downloads and CPU/CUDA selection.
+
 ```sh
-cmake -S . -B build-rvc -DAVC_BUILD_RVC_EXT=ON
+cmake -S . -B build-rvc -DAVC_BUILD_RVC_EXT=ON \
+  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 cmake --build build-rvc --target avc_rvc
 ```
 
 On Windows use the normal Visual Studio generator and configuration, for
 example `cmake --build build-rvc --config RelWithDebInfo --target avc_rvc`.
+For PowerShell, pass
+`"-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"`
+and `-DVCPKG_TARGET_TRIPLET=x64-windows-static-md` when configuring.
 The pinned archives include native x64 Windows builds of ONNX Runtime and the
 self-contained CPython converter. The installed extension and ONNX Runtime
 DLLs are placed together under `bin/extensions`.

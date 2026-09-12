@@ -473,7 +473,7 @@ void ControlPlane::registerRvcRoutes()
             if (req.is_multipart_form_data()) {
                 enum class Part { None, Checkpoint, Index } part = Part::None;
                 accepted = content_reader(
-                    [&](const httplib::MultipartFormData &file) {
+                    [&](const httplib::FormData &file) {
                         part = Part::None;
                         if (file.name == "checkpoint" && !upload) {
                             upload = rvc_models_.beginUpload(file.filename, name, error);
