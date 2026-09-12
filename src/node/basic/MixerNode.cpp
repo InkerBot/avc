@@ -11,16 +11,16 @@ NodeDescriptor MixerNode::descriptor()
     NodeDescriptor d;
     d.type = "mixer";
     d.category = "basic";
-    d.label = "Mixer";
+    d.label = "Input mixer";
     d.inputs = {{"in_1"}, {"in_2"}};
     d.outputs = {{"out"}};
     d.dynamic_inputs = true;
     return d;
 }
 
-void MixerNode::prepare(const PrepareInfo & ) {}
+void MixerNode::prepare(const PrepareInfo &) {}
 
-void MixerNode::setParam(std::uint32_t , float ) noexcept {}
+void MixerNode::setParam(std::uint32_t, float) noexcept {}
 
 // ZFW: HOT PATH
 void MixerNode::process(const NodeContext &ctx) noexcept
@@ -39,11 +39,9 @@ void MixerNode::process(const NodeContext &ctx) noexcept
     std::memcpy(out, ctx.inputs[first], ctx.nframes * sizeof(types::Sample));
     for (std::uint32_t i = first + 1; i < ctx.n_inputs; ++i) {
         const types::Sample *in = ctx.inputs[i];
-        if (in == nullptr) {
-            continue;
-        }
-        for (std::uint32_t f = 0; f < ctx.nframes; ++f) {
-            out[f] += in[f];
+        if (in == nullptr) continue;
+        for (std::uint32_t frame = 0; frame < ctx.nframes; ++frame) {
+            out[frame] += in[frame];
         }
     }
 }

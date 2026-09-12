@@ -665,6 +665,12 @@ BackendStats PipeWireBackend::stats() const noexcept
     out.sample_rate = format_.sample_rate;
     out.actual_quantum = actual_quantum_.load(std::memory_order_relaxed);
     out.actual_rate = actual_rate_.load(std::memory_order_relaxed);
+    // PipeWire owns the graph clock. Its detailed end-to-end device latency is
+    // not exposed here, so retain the previous one-block-per-direction estimate.
+    out.input_latency_frames = out.actual_quantum > 0 ? out.actual_quantum : out.quantum;
+    out.output_latency_frames = out.input_latency_frames;
+    out.io_latency_known = true;
+    out.device_driven = true;
     out.sched_policy = sched_policy_.load(std::memory_order_relaxed);
     out.sched_priority = sched_priority_.load(std::memory_order_relaxed);
     out.audio_tid = audio_tid_.load(std::memory_order_relaxed);

@@ -83,12 +83,11 @@ const char *const kEditorModule = R"JS(
 const translations = {
   'zh-CN': {
     name: '示例效果',
-    description: '扩展 ABI 的颤音效果示例。',
     category: { fx: '效果' },
     settings: {
       max_rate_hz: {
         name: '最高速率',
-        description: '超过约 20 Hz 后，颤音会逐渐变成环形调制。',
+        description: '>20 Hz 逐渐变为环形调制。',
       },
     },
     nodes: {
@@ -96,30 +95,28 @@ const translations = {
         label: '颤音',
         ports: { in: '输入', out: '输出' },
         params: {
-          rate_hz: { name: '速率', description: '音量每秒起伏的次数。' },
-          depth: { name: '深度', description: '音量起伏最低点的衰减幅度。' },
+          rate_hz: { name: '速率', description: '每秒起伏次数。' },
+          depth: { name: '深度', description: '起伏幅度。' },
         },
       },
       level: { label: '电平', ports: { in: '输入', out: '输出', said: '读数' } },
     },
     presets: { 'Tremolo mic': '麦克风颤音' },
     ui: {
-      title: '示例扩展设置',
+      title: '示例设置',
       fastestRate: '最高速率（Hz）',
       save: '保存并重启引擎',
-      saving: '正在保存…',
+      saving: '保存中…',
       saved: '已保存',
-      ownedBy: '此控件由 {{name}} 提供。',
     },
   },
   'en-US': {
     name: 'Example effects',
-    description: 'A tremolo effect demonstrating the extension ABI.',
     category: { fx: 'Effects' },
     settings: {
       max_rate_hz: {
         name: 'Maximum rate',
-        description: 'Above about 20 Hz, tremolo starts to become ring modulation.',
+        description: '>20 Hz gradually becomes ring modulation.',
       },
     },
     nodes: {
@@ -127,20 +124,19 @@ const translations = {
         label: 'Tremolo',
         ports: { in: 'Input', out: 'Output' },
         params: {
-          rate_hz: { name: 'Rate', description: 'How often the volume sweeps up and down.' },
-          depth: { name: 'Depth', description: 'How far the volume ducks at the bottom.' },
+          rate_hz: { name: 'Rate', description: 'Sweeps per second.' },
+          depth: { name: 'Depth', description: 'Sweep amount.' },
         },
       },
       level: { label: 'Level', ports: { in: 'Input', out: 'Output', said: 'Reading' } },
     },
     presets: { 'Tremolo mic': 'Tremolo microphone' },
     ui: {
-      title: 'Example extension settings',
+      title: 'Example settings',
       fastestRate: 'Maximum rate (Hz)',
       save: 'Save and restart engine',
       saving: 'Saving…',
       saved: 'Saved',
-      ownedBy: 'This control is provided by {{name}}.',
     },
   },
 }
@@ -198,34 +194,11 @@ class ExampleSettings extends HTMLElement {
   }
 }
 
-class TremoloInspector extends HTMLElement {
-  connectedCallback() {
-    this.stopLanguage = this.avcContext.i18n.onLanguageChanged(() => this.render())
-    this.render()
-  }
-
-  disconnectedCallback() {
-    this.stopLanguage?.()
-  }
-
-  render() {
-    const text = document.createElement('p')
-    text.className = 'hint'
-    text.textContent = this.avcContext.i18n.t('ui.ownedBy', {
-      name: this.avcContext.i18n.t('name'),
-    })
-    this.replaceChildren(text)
-  }
-}
-
 export function activate(api) {
   api.i18n.addResources(translations)
   if (!customElements.get('avc-example-settings'))
     customElements.define('avc-example-settings', ExampleSettings)
-  if (!customElements.get('avc-example-tremolo'))
-    customElements.define('avc-example-tremolo', TremoloInspector)
   api.components.registerSettings('avc-example-settings')
-  api.components.registerNodeInspector('example.tremolo', 'avc-example-tremolo')
 }
 )JS";
 
@@ -272,11 +245,10 @@ public:
 
 AVC_PLUGIN_MAIN(plugin)
 {
-    plugin.author("avc").describe("A tremolo, as a worked example of the extension ABI.");
+    plugin.author("avc").describe("Tremolo extension ABI example.");
 
     plugin.floatSetting("max_rate_hz", 20.0, 1.0, 200.0, "Fastest rate",
-                        "The top of the rate slider. Past about 20 Hz a tremolo stops "
-                        "sounding like one and starts sounding like a ring modulator.");
+                        ">20 Hz gradually becomes ring modulation.");
 
     const float max_rate = std::strtof(plugin.setting("max_rate_hz", "20").c_str(), nullptr);
 
@@ -285,9 +257,9 @@ AVC_PLUGIN_MAIN(plugin)
             .in("in")
             .out("out")
             .floatParam("rate_hz", 0.1F, max_rate > 0.1F ? max_rate : 20.0F, 5.0F, "Hz",
-                        AVC_CURVE_LOG, "How often the volume sweeps up and down.")
+                        AVC_CURVE_LOG, "Sweeps per second.")
             .floatParam("depth", 0.0F, 1.0F, 0.5F, "", AVC_CURVE_LINEAR,
-                        "How far it ducks at the bottom of the sweep."));
+                        "Sweep amount."));
 
     plugin.node<Level>(avc::sdk::NodeDesc("level", "fx", "Level")
                            .in("in")

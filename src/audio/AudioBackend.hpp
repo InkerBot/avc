@@ -56,6 +56,10 @@ struct BackendStats {
     std::uint32_t sample_rate = 0;
     std::uint32_t actual_quantum = 0;
     std::uint32_t actual_rate = 0;
+    std::uint32_t input_latency_frames = 0;
+    std::uint32_t output_latency_frames = 0;
+    bool io_latency_known = false;
+    bool device_driven = false;
     int sched_policy = -1;
     int sched_priority = 0;
     std::int32_t audio_tid = 0;

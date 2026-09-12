@@ -107,6 +107,9 @@ private:
         std::uint32_t output_offset = 0;
         std::uint32_t n_outputs = 0;
 
+        std::uint32_t mix_offset = 0;
+        std::uint32_t mix_count = 0;
+
         std::uint32_t node_index = 0;
 
         std::uint32_t pred_offset = 0;
@@ -128,6 +131,19 @@ private:
         std::uint32_t endpoint = 0;
         std::uint32_t slot = 0;
         types::Sample *buffer = nullptr;
+        StreamState *state = nullptr;
+    };
+
+    struct OutputBinding {
+        std::uint32_t endpoint = 0;
+        std::uint32_t source_offset = 0;
+        std::uint32_t source_count = 0;
+    };
+
+    struct MixBinding {
+        std::uint32_t source_offset = 0;
+        std::uint32_t source_count = 0;
+        types::Sample *output = nullptr;
         StreamState *state = nullptr;
     };
 
@@ -181,6 +197,9 @@ private:
                 bool discontinuity) noexcept;
 
     // ZFW: HOT PATH
+    void mixOne(const MixBinding &mix, std::uint32_t nframes) noexcept;
+
+    // ZFW: HOT PATH
     void drainParams(Domain &domain) noexcept;
 
     // ZFW: HOT PATH
@@ -220,11 +239,18 @@ private:
     std::vector<const StreamState *> input_states_;
     std::vector<StreamState *> output_states_;
 
+    std::vector<MixBinding> mix_bindings_;
+    std::vector<const types::Sample *> mix_sources_;
+    std::vector<const StreamState *> mix_source_states_;
+    std::vector<float> mix_gains_;
+
     std::vector<std::unique_ptr<Domain>> domains_;
     std::vector<std::unique_ptr<Crossing>> crossings_;
 
     std::vector<IoBinding> in_bindings_;
-    std::vector<IoBinding> out_bindings_;
+    std::vector<OutputBinding> out_bindings_;
+    std::vector<const types::Sample *> output_sources_;
+    std::vector<float> output_gains_;
 
     std::vector<PredRef> stage_preds_;
     std::vector<PredRef> output_stages_;

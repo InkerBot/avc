@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 
@@ -5,6 +6,7 @@ import { useStore } from '../store'
 import { desktopBridgeAvailable, type Extension } from '../api'
 import { ExtensionConfig } from './ExtensionConfig'
 import { extensionNodeType, extensionTranslationKey } from '../i18n'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 
 function status(t: TFunction, extension: Extension): { label: string; tone: string } {
   if (extension.disabledReason === 'crash') {
@@ -29,6 +31,14 @@ function Card({ extension }: { extension: Extension }) {
   const setExtensionEnabled = useStore((s) => s.setExtensionEnabled)
   const deleteExtension = useStore((s) => s.deleteExtension)
   const loadExtensionPreset = useStore((s) => s.loadExtensionPreset)
+  const dirty = useStore((s) => s.dirty)
+  const graphBusy = useStore((s) => s.graphBusy)
+  const [pending, setPending] = useState<
+    | { kind: 'disable' }
+    | { kind: 'delete' }
+    | { kind: 'preset'; name: string }
+    | null
+  >(null)
 
   const badge = status(t, extension)
   const inUse = typesInUse(
@@ -40,9 +50,6 @@ function Card({ extension }: { extension: Extension }) {
   const name = t(extensionTranslationKey(extensionId, 'name'), {
     defaultValue: extension.name || extension.key,
   })
-  const description = t(extensionTranslationKey(extensionId, 'description'), {
-    defaultValue: extension.description,
-  })
   const translatedTypes = inUse.map((type) => t(
     extensionTranslationKey(
       extensionId,
@@ -51,10 +58,38 @@ function Card({ extension }: { extension: Extension }) {
     { defaultValue: type },
   ))
 
+  const perform = (action: NonNullable<typeof pending>) => {
+    if (action.kind === 'delete') void deleteExtension(extension.key)
+    else if (action.kind === 'disable') void setExtensionEnabled(extension.key, false)
+    else void loadExtensionPreset(extension.key, action.name).catch(() => undefined)
+  }
+
+  const confirmTitle = pending?.kind === 'delete'
+    ? t('extensions.deleteConfirmTitle')
+    : pending?.kind === 'disable'
+      ? t('extensions.disableConfirmTitle')
+      : t('app.discardTitle')
+  const confirmBody = pending?.kind === 'delete'
+    ? t('extensions.deleteConfirm', { name })
+    : pending?.kind === 'disable'
+      ? t('extensions.disableConfirm', { types: translatedTypes.join(', ') })
+      : t('app.discardPresetLoad')
+
   return (
     <section
       className={`extcard${selected === extension.key ? ' extcard--on' : ''}`}
+      role="group"
+      tabIndex={0}
+      aria-label={name}
       onClick={() => selectExtension(extension.key)}
+      onFocus={() => selectExtension(extension.key)}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          selectExtension(extension.key)
+        }
+      }}
     >
       <header className="extcard__head">
         <h3 className="extcard__name">{name}</h3>
@@ -67,8 +102,6 @@ function Card({ extension }: { extension: Extension }) {
         <code>{extension.id || extension.key}</code>
         <span>{extension.path}</span>
       </p>
-
-      {description && <p className="hint">{description}</p>}
 
       {extension.error && (
         <p className="banner banner--error extcard__error">{extension.error}</p>
@@ -96,11 +129,12 @@ function Card({ extension }: { extension: Extension }) {
             <button
               key={preset.name}
               className="chip chip--action"
-              disabled={!isOn || extension.state !== 'loaded'}
+              disabled={!isOn || extension.state !== 'loaded' || graphBusy !== null}
               title={t('extensions.loadGraphHint')}
               onClick={(e) => {
                 e.stopPropagation()
-                void loadExtensionPreset(extension.key, preset.name)
+                if (dirty) setPending({ kind: 'preset', name: preset.name })
+                else void loadExtensionPreset(extension.key, preset.name).catch(() => undefined)
               }}
             >
               {t(extensionTranslationKey(extensionId, `presets.${preset.name}`), {
@@ -124,7 +158,8 @@ function Card({ extension }: { extension: Extension }) {
           title={t('extensions.restartNote')}
           onClick={(e) => {
             e.stopPropagation()
-            void setExtensionEnabled(extension.key, !isOn)
+            if (isOn && inUse.length > 0) setPending({ kind: 'disable' })
+            else void setExtensionEnabled(extension.key, !isOn)
           }}
         >
           {isOn ? t('extensions.disable') : t('extensions.enable')}
@@ -132,15 +167,30 @@ function Card({ extension }: { extension: Extension }) {
         <button
           className="button button--small"
           disabled={busy || isOn}
-          title={isOn ? t('extensions.deleteNeedsDisable') : t('extensions.deleteHint')}
+          title={isOn ? t('extensions.deleteNeedsDisable') : undefined}
           onClick={(e) => {
             e.stopPropagation()
-            void deleteExtension(extension.key)
+            setPending({ kind: 'delete' })
           }}
         >
           {t('extensions.delete')}
         </button>
       </footer>
+      <ConfirmDialog
+        open={pending !== null}
+        title={confirmTitle}
+        confirmLabel={t(pending?.kind === 'delete' ? 'extensions.delete' : pending?.kind === 'disable' ? 'extensions.disable' : 'app.discard')}
+        cancelLabel={t('app.cancel')}
+        confirmTone="danger"
+        onCancel={() => setPending(null)}
+        onConfirm={() => {
+          const action = pending
+          setPending(null)
+          if (action) perform(action)
+        }}
+      >
+        <p>{confirmBody}</p>
+      </ConfirmDialog>
     </section>
   )
 }
@@ -173,7 +223,6 @@ export function Extensions() {
               </button>
             )}
           </div>
-          <p className="hint">{t(desktopBridgeAvailable ? 'extensions.chooseHint' : 'extensions.rescanHint')}</p>
           {error && <p className="banner banner--error">{error}</p>}
         </div>
 

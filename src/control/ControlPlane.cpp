@@ -267,8 +267,21 @@ void ControlPlane::registerPresetRoutes()
 
     server_->Put(R"(/api/presets/([^/]+))", [this](const httplib::Request &req,
                                                    httplib::Response &res) {
+        json body;
+        if (!parseBody(req, res, body)) {
+            return;
+        }
+        if (!body.contains("spec")) {
+            sendError(res, 400, "missing 'spec'");
+            return;
+        }
         std::string error;
-        if (!presets_.save(req.matches[1], daemon_.spec(), error)) {
+        const auto spec = graph::GraphSpec::parse(body["spec"].dump(), error);
+        if (!spec) {
+            sendError(res, 400, error);
+            return;
+        }
+        if (!presets_.save(req.matches[1], *spec, error)) {
             sendError(res, 400, error);
             return;
         }

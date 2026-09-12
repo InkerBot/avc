@@ -132,6 +132,7 @@ export interface SpecNode {
 export interface SpecEdge {
   from: { node: string; port: string | number }
   to: { node: string; port: string | number }
+  gain_db?: number
 }
 
 export interface SpecDomain {
@@ -354,9 +355,13 @@ export const api = {
       body: JSON.stringify({ node, param, value }),
     })),
 
-  savePreset: (name: string) =>
-    nativeOr('savePreset', { name }, () =>
-      json<void>(`/api/presets/${encodeURIComponent(name)}`, { method: 'PUT' })),
+  savePreset: (name: string, spec: GraphSpec) =>
+    nativeOr('savePreset', { name, spec }, () =>
+      json<void>(`/api/presets/${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spec }),
+      })),
 
   loadPreset: (name: string) =>
     nativeOr('loadPreset', { name }, () => json<void>(`/api/presets/${encodeURIComponent(name)}/load`, {

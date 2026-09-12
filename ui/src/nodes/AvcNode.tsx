@@ -12,6 +12,7 @@ import {
 import { colorOf, levelColor, levelFraction, portColorOf } from '../theme'
 import { Scope } from './Scope'
 import { TextOutput } from './TextOutput'
+import { InputMixer } from './InputMixer'
 import { ExtensionComponent } from '../extensions/ExtensionComponent'
 import { useExtensionContext } from '../extensions/context'
 import { extensionNodeType, extensionTranslationKey } from '../i18n'
@@ -72,6 +73,8 @@ export function AvcNode({ id, data, selected }: NodeProps<AvcNodeType>) {
       : `nodes.${data.type}.label`,
     { defaultValue: descriptor.label },
   )
+  const beginHistoryGroup = useStore((s) => s.beginHistoryGroup)
+  const endHistoryGroup = useStore((s) => s.endHistoryGroup)
 
   const targetParam =
     descriptor.kind === 'dsp'
@@ -90,16 +93,18 @@ export function AvcNode({ id, data, selected }: NodeProps<AvcNodeType>) {
 
   return (
     <div
-      className={`node${data.type === 'text' ? ' node--text' : ''}${selected ? ' node--selected' : ''}${data.domain ? ' node--cold' : ''}${unavailable ? ' node--unavailable' : ''}`}
+      className={`node${data.type === 'text' ? ' node--text' : ''}${data.type === 'mixer' ? ' node--mixer' : ''}${selected ? ' node--selected' : ''}${data.domain ? ' node--cold' : ''}${unavailable ? ' node--unavailable' : ''}`}
       style={{ borderTopColor: unavailable ? 'var(--accent)' : accent }}
     >
       <NodeResizer
         isVisible={selected}
-        minWidth={data.type === 'text' ? 280 : 168}
-        minHeight={64}
+        minWidth={data.type === 'text' ? 280 : data.type === 'mixer' ? 230 : 168}
+        minHeight={data.type === 'mixer' ? 190 : 64}
         color={accent}
         handleClassName="node__resize-handle"
         lineClassName="node__resize-line"
+        onResizeStart={beginHistoryGroup}
+        onResizeEnd={endHistoryGroup}
       />
       <div className="node__head">
         <span className="node__label">{label}</span>
@@ -156,7 +161,9 @@ export function AvcNode({ id, data, selected }: NodeProps<AvcNodeType>) {
 
       {scope && <Scope wave={scope.wave} bands={scope.bands} bandsHz={scopeBandsHz ?? []} />}
 
-      {data.type === 'text' && <TextOutput text={text ?? ''} />}
+      {data.type === 'text' && <TextOutput conversation={text} />}
+
+      {data.type === 'mixer' && <InputMixer nodeId={id} />}
 
       {extension && extensionContext && (
         <ExtensionComponent

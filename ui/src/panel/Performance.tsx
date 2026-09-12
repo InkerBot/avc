@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from '../store'
 import type { DomainTelemetry } from '../api'
@@ -76,18 +77,15 @@ function ColdDomains({ domains }: { domains: DomainTelemetry[] }) {
               frames: domain.block,
               ms: domain.blockMs.toFixed(1),
             })}
-            hint={t('perf.coldBlockHint')}
           />
           <Row
             label={t('perf.coldAdded')}
             value={`${domain.latencyMs.toFixed(1)} ms`}
-            hint={t('perf.coldAddedHint')}
           />
           <Row
             label={t('perf.coldLoad')}
             value={`${domain.dspUsAvg.toFixed(0)} µs · ${domain.loadAvg.toFixed(1)}%`}
             warn={domain.loadAvg > 70}
-            hint={t('perf.coldLoadHint')}
           />
           <Row
             label={t('perf.coldMisses')}
@@ -112,7 +110,33 @@ export function Performance() {
   const tel = useStore((s) => s.telemetry)
   const setProfiling = useStore((s) => s.setProfiling)
   const resetStats = useStore((s) => s.resetStats)
+  const [pending, setPending] = useState<'profiling' | 'reset' | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const { t } = useTranslation()
+
+  const updateProfiling = async (enabled: boolean) => {
+    setPending('profiling')
+    setError(null)
+    try {
+      await setProfiling(enabled)
+    } catch (cause) {
+      setError((cause as Error).message)
+    } finally {
+      setPending(null)
+    }
+  }
+
+  const reset = async () => {
+    setPending('reset')
+    setError(null)
+    try {
+      await resetStats()
+    } catch (cause) {
+      setError((cause as Error).message)
+    } finally {
+      setPending(null)
+    }
+  }
 
   if (!tel) {
     return (
@@ -133,10 +157,9 @@ export function Performance() {
         label={t('perf.total')}
         value={`${tel.totalLatencyMs.toFixed(2)} ms`}
         warn={tel.totalLatencyMs > 20}
-        hint={t('perf.totalHint')}
       />
       <LatencyBar io={tel.ioLatencyMs} graph={tel.graphLatencyMs} />
-      <Row label={t('perf.io')} value={`${tel.ioLatencyMs.toFixed(2)} ms`} hint={t('perf.ioHint')} />
+      <Row label={t('perf.io')} value={`${tel.ioLatencyMs.toFixed(2)} ms`} />
       <Row
         label={t('perf.graph')}
         value={
@@ -158,7 +181,6 @@ export function Performance() {
             key={node}
             label={t('perf.output', { node })}
             value={`${ms.toFixed(2)} ms`}
-            hint={t('perf.outputHint')}
           />
         ))}
 
@@ -168,7 +190,6 @@ export function Performance() {
         label={t('perf.dspAvg')}
         value={`${tel.dspUsAvg.toFixed(1)} µs · ${tel.loadAvg.toFixed(1)}%`}
         warn={tel.loadAvg > 50}
-        hint={t('perf.dspAvgHint')}
       />
       <Row
         label={t('perf.dspPeak')}
@@ -189,14 +210,16 @@ export function Performance() {
           <input
             type="checkbox"
             checked={tel.profiling}
-            onChange={(e) => void setProfiling(e.target.checked)}
+            disabled={pending !== null}
+            onChange={(e) => void updateProfiling(e.target.checked)}
           />
           <span>{t('perf.profiling')}</span>
         </label>
-        <button className="button button--small" onClick={() => void resetStats()}>
-          {t('perf.reset')}
+        <button className="button button--small" disabled={pending !== null} onClick={() => void reset()}>
+          {pending === 'reset' ? t('perf.resetting') : t('perf.reset')}
         </button>
       </div>
+      {error && <p className="field__error">{error}</p>}
 
       {tel.profiling && <NodeCosts costs={tel.nodeCost} budgetUs={budgetUs} />}
     </div>

@@ -1092,32 +1092,29 @@ void avc::qwen::detail::registerSpeechNodes(avc::sdk::Plugin &plugin)
         avc::sdk::NodeDesc("stt", "speech", "Qwen 语音转文本")
             .in("audio")
             .out("transcript", avc::sdk::kTextPortType)
-            .boolParam("enabled", true, "启用实时语音识别。")
+            .boolParam("enabled", true)
             .enumParam("language", avc::qwen::asrLanguages(), 0,
-                       "auto 自动检测语种。")
+                       "auto = 自动检测。")
             .floatParam("vad_threshold", -1.0F, 1.0F, 0.0F, {}, AVC_CURVE_LINEAR,
-                        "服务端 VAD 灵敏度。")
+                         "VAD 灵敏度。")
             .floatParam("silence_duration_ms", 200.0F, 6000.0F, 400.0F, "ms",
-                        AVC_CURVE_LINEAR, "判定一句话结束所需的静音时长。"));
+                         AVC_CURVE_LINEAR, "结束语段所需的静音。"));
 
     plugin.node<QwenTtsNode>(
         avc::sdk::NodeDesc("tts", "speech", "Qwen 文本转语音")
             .in("text", avc::sdk::kTextPortType)
             .out("audio")
-            .boolParam("enabled", true, "启用实时语音合成。")
+            .boolParam("enabled", true)
             .enumParam("language", avc::qwen::ttsLanguages(), 0,
-                       "Auto 自动识别文本语种。")
-            .floatParam("speech_rate", 0.5F, 2.0F, 1.0F, {}, AVC_CURVE_LINEAR,
-                        "合成语速。")
-            .floatParam("volume", 0.0F, 100.0F, 50.0F, {}, AVC_CURVE_LINEAR,
-                        "合成音量。")
-            .floatParam("pitch_rate", 0.5F, 2.0F, 1.0F, {}, AVC_CURVE_LINEAR,
-                        "合成语调。")
+                        "Auto = 自动检测。")
+            .floatParam("speech_rate", 0.5F, 2.0F, 1.0F)
+            .floatParam("volume", 0.0F, 100.0F, 50.0F)
+            .floatParam("pitch_rate", 0.5F, 2.0F, 1.0F)
             .boolParam("optimize_instructions", false,
                        "为 Qwen3-TTS-Instruct 模型优化指令。")
             .floatParam("jitter_ms", 40.0F, 2000.0F, 160.0F, "ms",
-                        AVC_CURVE_LINEAR, "音频开始播放前的网络抖动缓冲。")
-            .textParam("voice", {}, "音色 ID；留空使用扩展默认 TTS 音色。")
+                         AVC_CURVE_LINEAR, "播放前的网络抖动缓冲。")
+            .textParam("voice", {}, "音色 ID；留空使用扩展默认值。")
             .textParam("instructions", {},
-                       "仅 Qwen3-TTS-Instruct 模型支持的声音指令。"));
+                        "仅 Qwen3-TTS-Instruct 支持。"));
 }

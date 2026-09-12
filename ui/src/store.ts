@@ -106,6 +106,42 @@ export function portTypeAt(
   return portTypes(declared, side === 'out' ? counts.outputs : counts.inputs)[index]
 }
 
+function validEdges(
+  nodes: AvcNode[],
+  descriptors: Record<string, NodeDescriptor>,
+  edges: Edge[],
+): Edge[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+
+  return edges.filter((edge) => {
+    const source = byId.get(edge.source)
+    const target = byId.get(edge.target)
+    if (!source || !target) return false
+
+    const sourceDescriptor = descriptors[source.data.type]
+    const targetDescriptor = descriptors[target.data.type]
+    const sourceHandle = edge.sourceHandle ?? null
+    const targetHandle = edge.targetHandle ?? null
+
+    // Keep edges for unavailable extension nodes intact. Once a descriptor is
+    // known, however, a missing handle means the edge points at a removed port.
+    const sourceType = sourceDescriptor
+      ? portTypeAt(nodes, descriptors, edge.source, sourceHandle)
+      : undefined
+    const targetType = targetDescriptor
+      ? portTypeAt(nodes, descriptors, edge.target, targetHandle)
+      : undefined
+    if (sourceDescriptor && (!sourceHandle?.startsWith('out:') || sourceType === undefined)) {
+      return false
+    }
+    if (targetDescriptor && (!targetHandle?.startsWith('in:') || targetType === undefined)) {
+      return false
+    }
+
+    return sourceType === undefined || targetType === undefined || sourceType === targetType
+  })
+}
+
 function specToFlow(spec: GraphSpec): { nodes: AvcNode[]; edges: Edge[] } {
   const nodes: AvcNode[] = spec.nodes.map((n) => {
     const params: Record<string, number> = {}
@@ -138,6 +174,7 @@ function specToFlow(spec: GraphSpec): { nodes: AvcNode[]; edges: Edge[] } {
     sourceHandle: `out:${e.from.port}`,
     target: e.to.node,
     targetHandle: `in:${e.to.port}`,
+    data: { gainDb: e.gain_db ?? 0 },
   }))
   return { nodes, edges }
 }
@@ -182,10 +219,15 @@ function flowToSpec(
     version,
     nodes: specNodes,
     domains: used,
-    edges: edges.map((e) => ({
-      from: { node: e.source, port: (e.sourceHandle ?? 'out:out').slice(4) },
-      to: { node: e.target, port: (e.targetHandle ?? 'in:in').slice(3) },
-    })),
+    edges: edges.map((e) => {
+      const edge = {
+        from: { node: e.source, port: (e.sourceHandle ?? 'out:out').slice(4) },
+        to: { node: e.target, port: (e.targetHandle ?? 'in:in').slice(3) },
+      } as GraphSpec['edges'][number]
+      const gainDb = Number((e.data as { gainDb?: number } | undefined)?.gainDb ?? 0)
+      if (gainDb !== 0) edge.gain_db = gainDb
+      return edge
+    }),
   }
 }
 
@@ -272,6 +314,11 @@ interface State {
   domains: Record<string, SpecDomain>
   dirty: boolean
   error: string | null
+  graphBusy: 'apply' | 'revert' | 'savePreset' | 'loadPreset' | null
+  history: GraphSnapshot[]
+  future: GraphSnapshot[]
+  historyAnchor: GraphSnapshot | null
+  savedFingerprint: string
   telemetry: Telemetry | null
 
   scopes: Record<string, { wave: number[]; bands: number[] }>
@@ -284,8 +331,13 @@ interface State {
   refreshDescriptors: () => Promise<void>
   apply: () => Promise<void>
   revert: () => Promise<void>
+  undo: () => void
+  redo: () => void
+  beginHistoryGroup: () => void
+  endHistoryGroup: () => void
   addNode: (type: string, at: { x: number; y: number }) => void
   setParam: (id: string, name: string, value: number) => void
+  setEdgeGain: (id: string, gainDb: number) => void
   setPortCount: (id: string, side: 'inputs' | 'outputs', count: number) => void
   setOption: (id: string, name: string, value: string) => void
   setDomain: (id: string, domain: string | undefined) => void
@@ -316,6 +368,60 @@ interface State {
   forceRestartEngine: () => Promise<void>
 }
 
+interface GraphSnapshot {
+  nodes: AvcNode[]
+  edges: Edge[]
+  domains: Record<string, SpecDomain>
+}
+
+const HISTORY_LIMIT = 50
+
+function cloneSnapshot(source: Pick<State, 'nodes' | 'edges' | 'domains'>): GraphSnapshot {
+  return {
+    nodes: source.nodes.map((node) => ({
+      ...node,
+      position: { ...node.position },
+      data: {
+        ...node.data,
+        params: { ...node.data.params },
+        options: { ...node.data.options },
+      },
+    })),
+    edges: source.edges.map((edge) => ({
+      ...edge,
+      data: edge.data ? { ...edge.data } : undefined,
+    })),
+    domains: Object.fromEntries(
+      Object.entries(source.domains).map(([name, domain]) => [name, { ...domain }]),
+    ),
+  }
+}
+
+function fingerprint(source: Pick<State, 'nodes' | 'edges' | 'domains'>): string {
+  return JSON.stringify(flowToSpec(source.nodes, source.edges, 1, source.domains))
+}
+
+function remember(source: State) {
+  if (source.historyAnchor) return {}
+  return {
+    history: [...source.history, cloneSnapshot(source)].slice(-HISTORY_LIMIT),
+    future: [],
+  }
+}
+
+function syncLiveParams(from: AvcNode[], to: AvcNode[], markFailed: () => void) {
+  const previous = new Map(from.map((node) => [node.id, node]))
+  to.forEach((node) => {
+    const before = previous.get(node.id)
+    if (!before) return
+    Object.entries(node.data.params).forEach(([name, value]) => {
+      if (before.data.params[name] !== value) {
+        api.setParam(node.id, name, value).catch(markFailed)
+      }
+    })
+  })
+}
+
 let nextId = 1
 
 export const useStore = create<State>((set, get) => ({
@@ -334,6 +440,11 @@ export const useStore = create<State>((set, get) => ({
   domains: {},
   dirty: false,
   error: null,
+  graphBusy: null,
+  history: [],
+  future: [],
+  historyAnchor: null,
+  savedFingerprint: '',
   telemetry: null,
   scopes: {},
   texts: {},
@@ -349,7 +460,15 @@ export const useStore = create<State>((set, get) => ({
     const descriptors = await api.descriptors()
     const byType: Record<string, NodeDescriptor> = {}
     descriptors.forEach((d) => (byType[d.type] = d))
-    set({ descriptors: byType, palette: descriptors })
+    set((current) => {
+      const edges = validEdges(current.nodes, byType, current.edges)
+      return {
+        descriptors: byType,
+        palette: descriptors,
+        edges,
+        dirty: current.dirty || edges.length !== current.edges.length,
+      }
+    })
     void get().refreshExtensions()
     void get().refreshPresets()
   },
@@ -364,7 +483,9 @@ export const useStore = create<State>((set, get) => ({
     void extensionRuntime.sync(extensions)
     const byType: Record<string, NodeDescriptor> = {}
     descriptors.forEach((d) => (byType[d.type] = d))
-    const { nodes, edges } = specToFlow(graph.spec)
+    const { nodes, edges: specEdges } = specToFlow(graph.spec)
+    const edges = validEdges(nodes, byType, specEdges)
+    const domains = graph.spec.domains ?? {}
     set({
       descriptors: byType,
       palette: descriptors,
@@ -372,9 +493,13 @@ export const useStore = create<State>((set, get) => ({
       extensions,
       nodes,
       edges,
-      domains: graph.spec.domains ?? {},
+      domains,
       dirty: false,
       error: null,
+      history: [],
+      future: [],
+      historyAnchor: null,
+      savedFingerprint: fingerprint({ nodes, edges, domains }),
       scopes: {},
       texts: {},
     })
@@ -382,19 +507,85 @@ export const useStore = create<State>((set, get) => ({
   },
 
   apply: async () => {
-    const { nodes, edges, domains } = get()
+    const current = get()
+    const { nodes, domains } = current
+    const edges = validEdges(nodes, current.descriptors, current.edges)
+    set({ graphBusy: 'apply', error: null, edges })
     try {
       const spec = flowToSpec(nodes, edges, 1, domains)
       await api.applyGraph(spec)
-      set({ dirty: false, error: null })
+      const savedFingerprint = fingerprint({ nodes, edges, domains })
+      set((current) => ({
+        dirty: fingerprint(current) !== savedFingerprint,
+        error: null,
+        savedFingerprint,
+      }))
     } catch (err) {
       set({ error: (err as Error).message })
+    } finally {
+      set({ graphBusy: null })
     }
   },
 
   revert: async () => {
-    await get().load()
+    set({ graphBusy: 'revert', error: null })
+    try {
+      await get().load()
+    } catch (err) {
+      set({ error: (err as Error).message })
+      throw err
+    } finally {
+      set({ graphBusy: null })
+    }
   },
+
+  undo: () => {
+    const current = get()
+    const target = current.history.at(-1)
+    if (!target) return
+    const restored = cloneSnapshot(target)
+    set({
+      ...restored,
+      history: current.history.slice(0, -1),
+      future: [cloneSnapshot(current), ...current.future].slice(0, HISTORY_LIMIT),
+      historyAnchor: null,
+      selected: null,
+      dirty: fingerprint(restored) !== current.savedFingerprint,
+    })
+    syncLiveParams(current.nodes, restored.nodes, () => set({ dirty: true }))
+  },
+
+  redo: () => {
+    const current = get()
+    const target = current.future[0]
+    if (!target) return
+    const restored = cloneSnapshot(target)
+    set({
+      ...restored,
+      history: [...current.history, cloneSnapshot(current)].slice(-HISTORY_LIMIT),
+      future: current.future.slice(1),
+      historyAnchor: null,
+      selected: null,
+      dirty: fingerprint(restored) !== current.savedFingerprint,
+    })
+    syncLiveParams(current.nodes, restored.nodes, () => set({ dirty: true }))
+  },
+
+  beginHistoryGroup: () => set((s) => (
+    s.historyAnchor ? {} : { historyAnchor: cloneSnapshot(s) }
+  )),
+
+  endHistoryGroup: () => set((s) => {
+    const anchor = s.historyAnchor
+    if (!anchor) return {}
+    if (fingerprint(anchor) === fingerprint(s)) return { historyAnchor: null }
+    return {
+      history: [...s.history, anchor].slice(-HISTORY_LIMIT),
+      future: [],
+      historyAnchor: null,
+      dirty: fingerprint(s) !== s.savedFingerprint,
+    }
+  }),
 
   addNode: (type, at) => {
     const descriptor = get().descriptors[type]
@@ -434,28 +625,68 @@ export const useStore = create<State>((set, get) => ({
           }
         }
       }
-      return { nodes: [...s.nodes, node], domains, selected: id, dirty: true }
+      return {
+        ...remember(s),
+        nodes: [...s.nodes, node],
+        domains,
+        selected: id,
+        dirty: true,
+      }
     })
   },
 
   setParam: (id, name, value) => {
-    set((s) => ({
-      nodes: s.nodes.map((n) =>
+    set((s) => {
+      const nodes = s.nodes.map((n) =>
         n.id === id ? { ...n, data: { ...n.data, params: { ...n.data.params, [name]: value } } } : n,
-      ),
-    }))
+      )
+      return {
+        nodes,
+        savedFingerprint: s.dirty
+          ? s.savedFingerprint
+          : fingerprint({ nodes, edges: s.edges, domains: s.domains }),
+      }
+    })
     api.setParam(id, name, value).catch(() => set({ dirty: true }))
   },
 
-  setPortCount: (id, side, count) => {
+  setEdgeGain: (id, gainDb) => {
     set((s) => ({
-      nodes: s.nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, [side]: count } } : n)),
+      ...remember(s),
+      edges: s.edges.map((edge) =>
+        edge.id === id
+          ? { ...edge, data: { ...edge.data, gainDb: Math.max(-90, Math.min(24, gainDb)) } }
+          : edge,
+      ),
       dirty: true,
     }))
   },
 
+  setPortCount: (id, side, count) => {
+    set((s) => {
+      const node = s.nodes.find((entry) => entry.id === id)
+      const descriptor = node ? s.descriptors[node.data.type] : undefined
+      const dynamic = side === 'inputs' ? descriptor?.dynamicInputs : descriptor?.dynamicOutputs
+      if (!node || !dynamic) return s
+
+      const nextCount = Math.max(1, Math.trunc(count))
+      const nodes = s.nodes.map((entry) =>
+        entry.id === id
+          ? { ...entry, data: { ...entry.data, [side]: nextCount } }
+          : entry,
+      )
+      return {
+        ...remember(s),
+        nodes,
+        edges: validEdges(nodes, s.descriptors, s.edges),
+        dirty: true,
+      }
+    })
+  },
+
   setOption: (id, name, value) => {
     set((s) => ({
+      ...remember(s),
       nodes: s.nodes.map((n) =>
         n.id === id ? { ...n, data: { ...n.data, options: { ...n.data.options, [name]: value } } } : n,
       ),
@@ -481,7 +712,12 @@ export const useStore = create<State>((set, get) => ({
           [domain]: recommended > 0 ? { block: recommended } : {},
         }
       }
-      return { nodes, domains: pruneDomains(domains, nodes), dirty: true }
+      return {
+        ...remember(s),
+        nodes,
+        domains: pruneDomains(domains, nodes),
+        dirty: true,
+      }
     })
   },
 
@@ -498,12 +734,13 @@ export const useStore = create<State>((set, get) => ({
       )
       const domains = { ...s.domains, [name]: s.domains[domain] }
       delete domains[domain]
-      return { nodes, domains, dirty: true }
+      return { ...remember(s), nodes, domains, dirty: true }
     })
   },
 
   setDomainSetting: (domain, key, value) => {
     set((s) => ({
+      ...remember(s),
       domains: { ...s.domains, [domain]: { ...s.domains[domain], [key]: value } },
       dirty: true,
     }))
@@ -515,38 +752,53 @@ export const useStore = create<State>((set, get) => ({
     const resized = changes.some((c) => c.type === 'dimensions' && c.resizing === false)
     set((s) => {
       const nodes = applyNodeChanges(changes, s.nodes)
+      const changed = structural || moved || resized
       return {
+        ...(changed ? remember(s) : {}),
         nodes,
+        edges: structural ? validEdges(nodes, s.descriptors, s.edges) : s.edges,
         domains: structural ? pruneDomains(s.domains, nodes) : s.domains,
-        dirty: s.dirty || structural || moved || resized,
+        dirty: s.dirty || changed,
       }
     })
   },
 
   onEdgesChange: (changes) => {
-    set((s) => ({
-      edges: applyEdgeChanges(changes, s.edges),
-      dirty: s.dirty || changes.some((c) => c.type === 'remove'),
-    }))
+    set((s) => {
+      const edges = applyEdgeChanges(changes, s.edges)
+      const structural = changes.some((c) => c.type === 'add' || c.type === 'remove')
+      const changed = structural && (
+        edges.length !== s.edges.length
+        || edges.some((edge, index) => edge.id !== s.edges[index]?.id)
+      )
+      return {
+        ...(changed ? remember(s) : {}),
+        edges,
+        dirty: s.dirty || changed,
+      }
+    })
   },
 
   canConnect: (connection) => {
-    const { nodes, descriptors } = get()
+    const { nodes, descriptors, edges } = get()
     const from = portTypeAt(nodes, descriptors, connection.source, connection.sourceHandle ?? null)
     const to = portTypeAt(nodes, descriptors, connection.target, connection.targetHandle ?? null)
 
-    if (from === undefined || to === undefined) return true
-    return from === to
+    if (from === undefined || to === undefined) return false
+    if (from !== to) return false
+    if (to === AUDIO_PORT_TYPE) return true
+    return !edges.some(
+      (edge) => edge.target === connection.target && edge.targetHandle === connection.targetHandle,
+    )
   },
 
   onConnect: (connection) => {
     if (!get().canConnect(connection)) return
-    set((s) => {
-      const kept = s.edges.filter(
-        (e) => !(e.target === connection.target && e.targetHandle === connection.targetHandle),
-      )
-      return { edges: addEdge(connection, kept), dirty: true }
-    })
+    set((s) => ({
+      ...remember(s),
+      edges: addEdge({ ...connection, data: { gainDb: 0 } }, s.edges),
+      dirty: true,
+    }))
   },
 
   select: (id) => set({ selected: id }),
@@ -600,18 +852,46 @@ export const useStore = create<State>((set, get) => ({
   },
 
   savePreset: async (name) => {
-    await api.savePreset(name)
-    await get().refreshPresets()
+    set({ graphBusy: 'savePreset', error: null })
+    try {
+      const current = get()
+      const { nodes, domains } = current
+      const edges = validEdges(nodes, current.descriptors, current.edges)
+      if (edges.length !== current.edges.length) set({ edges, dirty: true })
+      await api.savePreset(name, flowToSpec(nodes, edges, 1, domains))
+      await get().refreshPresets()
+    } catch (err) {
+      set({ error: (err as Error).message })
+      throw err
+    } finally {
+      set({ graphBusy: null })
+    }
   },
 
   loadPreset: async (name) => {
-    await api.loadPreset(name)
-    await get().load()
+    set({ graphBusy: 'loadPreset', error: null })
+    try {
+      await api.loadPreset(name)
+      await get().load()
+    } catch (err) {
+      set({ error: (err as Error).message })
+      throw err
+    } finally {
+      set({ graphBusy: null })
+    }
   },
 
   loadExtensionPreset: async (key, name) => {
-    await api.loadExtensionPreset(key, name)
-    await get().load()
+    set({ graphBusy: 'loadPreset', error: null })
+    try {
+      await api.loadExtensionPreset(key, name)
+      await get().load()
+    } catch (err) {
+      set({ error: (err as Error).message })
+      throw err
+    } finally {
+      set({ graphBusy: null })
+    }
   },
 
   refreshExtensions: async () => {
@@ -623,9 +903,16 @@ export const useStore = create<State>((set, get) => ({
   selectExtension: (key) => set({ selectedExtension: key }),
 
   rescanExtensions: async () => {
-    const extensions = await api.rescanExtensions()
-    void extensionRuntime.sync(extensions)
-    set({ extensions, extensionError: null })
+    set({ extensionsBusy: true, extensionError: null })
+    try {
+      const extensions = await api.rescanExtensions()
+      void extensionRuntime.sync(extensions)
+      set({ extensions })
+    } catch (err) {
+      set({ extensionError: (err as Error).message })
+    } finally {
+      set({ extensionsBusy: false })
+    }
   },
 
   setExtensionEnabled: async (key, enabled) => {

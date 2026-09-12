@@ -295,6 +295,10 @@ private:
         case WM_SETFOCUS:
             if (controller_ != nullptr) controller_->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
             return 0;
+        case WM_ACTIVATEAPP:
+        case WM_DISPLAYCHANGE:
+            if (wparam != FALSE || message == WM_DISPLAYCHANGE) refreshWebViewSurface(window);
+            return 0;
         case WM_TIMER:
             if (wparam == kTelemetryTimer) pushEvents();
             return 0;
@@ -676,8 +680,11 @@ private:
             return {};
         }
         if (method == "savePreset") {
+            if (!params.contains("spec")) return rpcError(400, "missing 'spec'");
             std::string error;
-            return presets_.save(params.at("name").get<std::string>(), daemon_.spec(), error)
+            const auto spec = graph::GraphSpec::parse(params["spec"].dump(), error);
+            if (!spec) return rpcError(400, error);
+            return presets_.save(params.at("name").get<std::string>(), *spec, error)
                        ? RpcReply{}
                        : rpcError(400, error);
         }
@@ -713,7 +720,10 @@ private:
         if (method == "usbIpDriverStatus") return {true, daemon_.usbIpDriverStatus()};
         if (method == "installUsbIpDriver") {
             std::string error;
-            if (!daemon_.installUsbIpDriver(error, true)) return rpcError(400, error);
+            if (!daemon_.installUsbIpDriver(error, true,
+                                            window_.load(std::memory_order_acquire))) {
+                return rpcError(400, error);
+            }
             return {true, daemon_.usbIpDriverStatus()};
         }
         if (method == "extensions") return {true, daemon_.extensions()};
@@ -921,6 +931,15 @@ private:
         RECT bounds{};
         GetClientRect(window, &bounds);
         controller_->put_Bounds(bounds);
+    }
+
+    void refreshWebViewSurface(HWND window)
+    {
+        if (controller_ == nullptr) return;
+        controller_->NotifyParentWindowPositionChanged();
+        resizeWebView();
+        RedrawWindow(window, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     }
 
     void signalReady(bool okay)

@@ -732,7 +732,7 @@ nlohmann::json Daemon::usbIpDriverStatus() const
 #endif
 }
 
-bool Daemon::installUsbIpDriver(std::string &error, bool trusted_local)
+bool Daemon::installUsbIpDriver(std::string &error, bool trusted_local, void *owner_window)
 {
     const bool loopback = options_.http_bind == "127.0.0.1" || options_.http_bind == "::1"
                           || options_.http_bind == "localhost";
@@ -741,10 +741,11 @@ bool Daemon::installUsbIpDriver(std::string &error, bool trusted_local)
         return false;
     }
 #ifdef _WIN32
-    if (!audio::installBundledUsbIpDriver(error)) return false;
+    if (!audio::installBundledUsbIpDriver(error, owner_window)) return false;
     requestForceRestart();
     return true;
 #else
+    (void)owner_window;
     error = "USB/IP driver installation is available only on Windows";
     return false;
 #endif
@@ -775,6 +776,9 @@ nlohmann::json Daemon::telemetry() const
              {"sampleRate", options_.format.sample_rate},
              {"blockMs", 1000.0 * options_.format.quantum / options_.format.sample_rate},
              {"ioLatencyMs", 0.0},
+             {"captureLatencyMs", 0.0},
+             {"playbackLatencyMs", 0.0},
+             {"clockSource", "timer"},
              {"graphLatencyFrames", 0},
              {"graphLatencyMs", 0.0},
              {"totalLatencyMs", 0.0},

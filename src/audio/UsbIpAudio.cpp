@@ -1140,6 +1140,17 @@ bool bundledInstallerMatches(const std::filesystem::path &path)
 #endif
 }
 
+HWND elevationOwner(void *preferred = nullptr) noexcept
+{
+    HWND owner = static_cast<HWND>(preferred);
+    if (owner != nullptr && IsWindow(owner)) return owner;
+
+    owner = GetForegroundWindow();
+    DWORD process = 0;
+    if (owner != nullptr) GetWindowThreadProcessId(owner, &process);
+    return process == GetCurrentProcessId() ? owner : nullptr;
+}
+
 bool launchElevated(std::string_view operation, std::span<const int> buses, std::string &error)
 {
     const std::wstring executable = currentExecutable();
@@ -1158,6 +1169,7 @@ bool launchElevated(std::string_view operation, std::span<const int> buses, std:
     SHELLEXECUTEINFOW info{};
     info.cbSize = sizeof(info);
     info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+    info.hwnd = elevationOwner();
     info.lpVerb = L"runas";
     info.lpFile = executable.c_str();
     info.lpParameters = parameters.c_str();
@@ -1951,7 +1963,7 @@ UsbIpDriverStatus queryUsbIpDriverStatus()
     return status;
 }
 
-bool installBundledUsbIpDriver(std::string &error)
+bool installBundledUsbIpDriver(std::string &error, void *owner_window)
 {
     const std::filesystem::path installer = bundledUsbIpInstaller();
     std::error_code ec;
@@ -1972,6 +1984,7 @@ bool installBundledUsbIpDriver(std::string &error)
     SHELLEXECUTEINFOW info{};
     info.cbSize = sizeof(info);
     info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+    info.hwnd = elevationOwner(owner_window);
     info.lpVerb = L"runas";
     info.lpFile = installer.c_str();
     info.lpParameters = parameters.c_str();

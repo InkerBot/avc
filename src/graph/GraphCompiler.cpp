@@ -5,6 +5,7 @@
 #include "node/PortTypeManifest.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -30,6 +31,7 @@ struct Edge {
     std::uint32_t to_port = 0;
 
     std::uint32_t type = node::kAudioPortTypeIndex;
+    float gain = 1.0F;
 };
 
 struct ForeignOut {
@@ -46,7 +48,7 @@ struct Vertex {
     std::vector<std::string> out_names;
     std::vector<std::uint32_t> in_types;
     std::vector<std::uint32_t> out_types;
-    std::vector<int> in_edge;
+    std::vector<std::vector<int>> in_edges;
     std::vector<std::uint32_t> out_fanout;
     std::vector<std::uint32_t> out_slot;
     std::vector<std::uint32_t> out_remaining;
@@ -176,6 +178,12 @@ std::string portRefText(const PortRef &ref)
                                                     : std::to_string(std::get<std::uint32_t>(ref));
 }
 
+float edgeGain(float db) noexcept
+{
+    db = std::clamp(db, -90.0F, 24.0F);
+    return db <= -90.0F ? 0.0F : std::pow(10.0F, db / 20.0F);
+}
+
 }
 
 class GraphCompiler::Builder {
@@ -234,6 +242,9 @@ private:
     };
     std::vector<SlotSpot> stage_in_slots_;
     std::vector<SlotSpot> stage_out_slots_;
+    std::vector<SlotSpot> mix_source_slots_;
+    std::vector<SlotSpot> mix_output_slots_;
+    std::vector<SlotSpot> output_source_slots_;
 
     std::unique_ptr<CompiledGraph> graph_ = std::make_unique<CompiledGraph>();
 };
@@ -272,7 +283,7 @@ bool GraphCompiler::Builder::resolveNodes(std::string &error)
                                  vertex.out_types, error)) {
             return false;
         }
-        vertex.in_edge.assign(n_in, -1);
+        vertex.in_edges.resize(n_in);
         vertex.out_fanout.assign(vertex.out_names.size(), 0);
         vertex.out_slot.assign(vertex.out_names.size(), kNoSlot);
         vertex.out_remaining.assign(vertex.out_names.size(), 0);
@@ -340,12 +351,6 @@ bool GraphCompiler::Builder::resolveEdges(std::string &error)
                     + " references a port that does not exist";
             return false;
         }
-        if (to.in_edge[to_port] >= 0) {
-            error = "input " + spec_edge.to.node + ":" + to.in_names[to_port]
-                    + " already has a connection; an input takes one edge, use a mixer to sum";
-            return false;
-        }
-
         const std::uint32_t from_type = from.out_types[static_cast<std::size_t>(from_port)];
         const std::uint32_t to_type = to.in_types[static_cast<std::size_t>(to_port)];
         if (from_type != to_type) {
@@ -357,10 +362,20 @@ bool GraphCompiler::Builder::resolveEdges(std::string &error)
             return false;
         }
 
-        to.in_edge[to_port] = static_cast<int>(edges_.size());
+        const bool already_connected = !to.in_edges[static_cast<std::size_t>(to_port)].empty();
+        if (from_type != node::kAudioPortTypeIndex
+            && (already_connected || spec_edge.gain_db != 0.0F)) {
+            error = "input " + spec_edge.to.node + ":" + to.in_names[to_port]
+                    + " carries '" + PortTypeManifest::instance().at(from_type).name
+                    + "'; only audio inputs can mix multiple edges or apply gain";
+            return false;
+        }
+
+        to.in_edges[to_port].push_back(static_cast<int>(edges_.size()));
         ++from.out_fanout[from_port];
         edges_.push_back({from_it->second, static_cast<std::uint32_t>(from_port), to_it->second,
-                          static_cast<std::uint32_t>(to_port), from_type});
+                          static_cast<std::uint32_t>(to_port), from_type,
+                          edgeGain(spec_edge.gain_db)});
     }
     return true;
 }
@@ -685,19 +700,30 @@ void GraphCompiler::Builder::assignSlots()
         }
 
         if (isIo(vertex.desc->kind)) {
-            for (std::size_t port = 0; port < vertex.in_edge.size(); ++port) {
-                const int edge = vertex.in_edge[port];
-                if (edge < 0) {
+            for (std::size_t port = 0; port < vertex.in_edges.size(); ++port) {
+                const std::vector<int> &incoming = vertex.in_edges[port];
+                if (incoming.empty()) {
                     // Nothing patched in, but the port still has to be written
                     // or it replays whatever was last in the buffer.
                     graph_->silent_outputs_.push_back(vertex.io_slots[port]);
                     continue;
                 }
-                // Never released, so the buffer stays live until the graph ends.
-                const Source source = sourceOf(vertex.domain, edge);
-                graph_->out_bindings_.push_back({vertex.io_slots[port], source.slot, nullptr});
-                graph_->output_stages_.push_back({source.pred_stage, source.extra});
-                graph_->output_nodes_.push_back(vertex.spec->id);
+
+                CompiledGraph::OutputBinding binding;
+                binding.endpoint = vertex.io_slots[port];
+                binding.source_offset = static_cast<std::uint32_t>(output_source_slots_.size());
+                binding.source_count = static_cast<std::uint32_t>(incoming.size());
+                for (int edge : incoming) {
+                    // Never released, so every source buffer stays live until
+                    // the graph ends and copyOut can sum it into the endpoint.
+                    const Source source = sourceOf(vertex.domain, edge);
+                    output_source_slots_.push_back(
+                        {vertex.domain, source.type, static_cast<std::int64_t>(source.slot)});
+                    graph_->output_gains_.push_back(edges_[static_cast<std::size_t>(edge)].gain);
+                    graph_->output_stages_.push_back({source.pred_stage, source.extra});
+                    graph_->output_nodes_.push_back(vertex.spec->id);
+                }
+                graph_->out_bindings_.push_back(binding);
             }
             continue;
         }
@@ -709,6 +735,7 @@ void GraphCompiler::Builder::assignSlots()
         stage.node_index = static_cast<std::uint32_t>(vertex.dsp_index);
         stage.output_offset = static_cast<std::uint32_t>(stage_out_slots_.size());
         stage.n_outputs = static_cast<std::uint32_t>(vertex.out_slot.size());
+        stage.mix_offset = static_cast<std::uint32_t>(graph_->mix_bindings_.size());
         for (std::size_t port = 0; port < vertex.out_slot.size(); ++port) {
             publish(port, poolFor(vertex.domain, vertex.out_types[port]).acquire());
             stage_out_slots_.push_back({vertex.domain, vertex.out_types[port],
@@ -716,32 +743,63 @@ void GraphCompiler::Builder::assignSlots()
         }
 
         stage.input_offset = static_cast<std::uint32_t>(stage_in_slots_.size());
-        stage.n_inputs = static_cast<std::uint32_t>(vertex.in_edge.size());
+        stage.n_inputs = static_cast<std::uint32_t>(vertex.in_edges.size());
         stage.pred_offset = static_cast<std::uint32_t>(graph_->stage_preds_.size());
-        stage.pred_count = static_cast<std::uint32_t>(vertex.in_edge.size());
+        std::vector<SlotSpot> temporary_mixes;
 
-        for (std::size_t port = 0; port < vertex.in_edge.size(); ++port) {
-            const int edge = vertex.in_edge[port];
-            if (edge < 0) {
+        for (std::size_t port = 0; port < vertex.in_edges.size(); ++port) {
+            const std::vector<int> &incoming = vertex.in_edges[port];
+            if (incoming.empty()) {
                 stage_in_slots_.push_back({vertex.domain, vertex.in_types[port], -1});
                 graph_->stage_preds_.push_back({-1, 0});
                 continue;
             }
-            const Source source = sourceOf(vertex.domain, edge);
-            stage_in_slots_.push_back(
-                {vertex.domain, source.type, static_cast<std::int64_t>(source.slot)});
-            graph_->stage_preds_.push_back({source.pred_stage, source.extra});
+
+            const Edge &only = edges_[static_cast<std::size_t>(incoming.front())];
+            if (incoming.size() == 1 && only.gain == 1.0F) {
+                const Source source = sourceOf(vertex.domain, incoming.front());
+                stage_in_slots_.push_back(
+                    {vertex.domain, source.type, static_cast<std::int64_t>(source.slot)});
+                graph_->stage_preds_.push_back({source.pred_stage, source.extra});
+                continue;
+            }
+
+            const std::uint32_t mixed_slot =
+                poolFor(vertex.domain, node::kAudioPortTypeIndex).acquire();
+            const SlotSpot mixed{vertex.domain, node::kAudioPortTypeIndex,
+                                 static_cast<std::int64_t>(mixed_slot)};
+            stage_in_slots_.push_back(mixed);
+            temporary_mixes.push_back(mixed);
+
+            CompiledGraph::MixBinding binding;
+            binding.source_offset = static_cast<std::uint32_t>(mix_source_slots_.size());
+            binding.source_count = static_cast<std::uint32_t>(incoming.size());
+            for (int edge : incoming) {
+                const Source source = sourceOf(vertex.domain, edge);
+                mix_source_slots_.push_back(
+                    {vertex.domain, source.type, static_cast<std::int64_t>(source.slot)});
+                graph_->mix_gains_.push_back(edges_[static_cast<std::size_t>(edge)].gain);
+                graph_->stage_preds_.push_back({source.pred_stage, source.extra});
+            }
+            mix_output_slots_.push_back(mixed);
+            graph_->mix_bindings_.push_back(binding);
+            ++stage.mix_count;
         }
+        stage.pred_count =
+            static_cast<std::uint32_t>(graph_->stage_preds_.size()) - stage.pred_offset;
 
         vertex.stage_index = static_cast<int>(graph_->order_.size());
         graph_->domains_[vertex.domain]->exec.push_back(
             static_cast<std::uint32_t>(graph_->order_.size()));
         graph_->order_.push_back(stage);
 
-        for (int edge : vertex.in_edge) {
-            if (edge >= 0) {
+        for (const std::vector<int> &incoming : vertex.in_edges) {
+            for (int edge : incoming) {
                 releaseSource(vertex.domain, edge);
             }
+        }
+        for (const SlotSpot &mix : temporary_mixes) {
+            poolFor(mix.domain, mix.type).release(static_cast<std::uint32_t>(mix.slot));
         }
         for (std::size_t port = 0; port < vertex.out_slot.size(); ++port) {
             if (vertex.out_remaining[port] == 0) {
@@ -815,15 +873,35 @@ void GraphCompiler::Builder::resolvePointers()
             &graph_->domains_[spot.domain]->stores[spot.type].states[spot.slot]);
     }
 
+    graph_->mix_sources_.reserve(mix_source_slots_.size());
+    graph_->mix_source_states_.reserve(mix_source_slots_.size());
+    for (const SlotSpot &spot : mix_source_slots_) {
+        std::byte *data = graph_->slotData(
+            spot.domain, spot.type, static_cast<std::uint32_t>(spot.slot));
+        graph_->mix_sources_.push_back(reinterpret_cast<types::Sample *>(data));
+        graph_->mix_source_states_.push_back(
+            &graph_->domains_[spot.domain]->stores[spot.type]
+                 .states[static_cast<std::size_t>(spot.slot)]);
+    }
+    for (std::size_t i = 0; i < graph_->mix_bindings_.size(); ++i) {
+        const SlotSpot &spot = mix_output_slots_[i];
+        graph_->mix_bindings_[i].output = reinterpret_cast<types::Sample *>(
+            graph_->slotData(spot.domain, spot.type, static_cast<std::uint32_t>(spot.slot)));
+        graph_->mix_bindings_[i].state =
+            &graph_->domains_[spot.domain]->stores[spot.type]
+                 .states[static_cast<std::size_t>(spot.slot)];
+    }
+
     for (CompiledGraph::IoBinding &binding : graph_->in_bindings_) {
         binding.buffer = reinterpret_cast<types::Sample *>(
             graph_->slotData(0, node::kAudioPortTypeIndex, binding.slot));
         binding.state = &graph_->domains_[0]->stores[node::kAudioPortTypeIndex]
                              .states[binding.slot];
     }
-    for (CompiledGraph::IoBinding &binding : graph_->out_bindings_) {
-        binding.buffer = reinterpret_cast<types::Sample *>(
-            graph_->slotData(0, node::kAudioPortTypeIndex, binding.slot));
+    graph_->output_sources_.reserve(output_source_slots_.size());
+    for (const SlotSpot &spot : output_source_slots_) {
+        graph_->output_sources_.push_back(reinterpret_cast<types::Sample *>(
+            graph_->slotData(spot.domain, spot.type, static_cast<std::uint32_t>(spot.slot))));
     }
 
     for (std::unique_ptr<Crossing> &crossing : graph_->crossings_) {

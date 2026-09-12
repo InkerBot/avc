@@ -242,14 +242,28 @@ void CompiledGraph::copyIn(const audio::ProcessContext &ctx, std::uint32_t nfram
 // ZFW: HOT PATH
 void CompiledGraph::copyOut(const audio::ProcessContext &ctx, std::uint32_t nframes) noexcept
 {
-    const std::size_t bytes = static_cast<std::size_t>(nframes) * sizeof(types::Sample);
-    for (const IoBinding &binding : out_bindings_) {
+    for (const OutputBinding &binding : out_bindings_) {
         types::Sample *dst =
             binding.endpoint < ctx.n_outputs ? ctx.outputs[binding.endpoint] : nullptr;
-        if (AVC_LIKELY(dst != nullptr)) {
-            std::memcpy(dst, binding.buffer, bytes);
+        if (AVC_UNLIKELY(dst == nullptr)) {
+            continue;
+        }
+
+        const types::Sample *first = output_sources_[binding.source_offset];
+        const float first_gain = output_gains_[binding.source_offset];
+        for (std::uint32_t frame = 0; frame < nframes; ++frame) {
+            dst[frame] = first[frame] * first_gain;
+        }
+        for (std::uint32_t source = 1; source < binding.source_count; ++source) {
+            const std::size_t at = binding.source_offset + source;
+            const types::Sample *input = output_sources_[at];
+            const float gain = output_gains_[at];
+            for (std::uint32_t frame = 0; frame < nframes; ++frame) {
+                dst[frame] += input[frame] * gain;
+            }
         }
     }
+    const std::size_t bytes = static_cast<std::size_t>(nframes) * sizeof(types::Sample);
     for (std::uint32_t endpoint : silent_outputs_) {
         types::Sample *dst = endpoint < ctx.n_outputs ? ctx.outputs[endpoint] : nullptr;
         if (dst != nullptr) {
@@ -307,9 +321,37 @@ void CompiledGraph::writeCrossings(const Domain &domain, std::uint32_t nframes,
 }
 
 // ZFW: HOT PATH
+void CompiledGraph::mixOne(const MixBinding &mix, std::uint32_t nframes) noexcept
+{
+    const types::Sample *first = mix_sources_[mix.source_offset];
+    const float first_gain = mix_gains_[mix.source_offset];
+    for (std::uint32_t frame = 0; frame < nframes; ++frame) {
+        mix.output[frame] = first[frame] * first_gain;
+    }
+
+    StreamState state = *mix_source_states_[mix.source_offset];
+    for (std::uint32_t source = 1; source < mix.source_count; ++source) {
+        const std::size_t at = mix.source_offset + source;
+        const types::Sample *input = mix_sources_[at];
+        const float gain = mix_gains_[at];
+        for (std::uint32_t frame = 0; frame < nframes; ++frame) {
+            mix.output[frame] += input[frame] * gain;
+        }
+        const StreamState input_state = *mix_source_states_[at];
+        state.exact = state.exact && input_state.exact;
+        state.discontinuity = state.discontinuity || input_state.discontinuity;
+    }
+    *mix.state = state;
+}
+
+// ZFW: HOT PATH
 void CompiledGraph::runOne(const Stage &stage, std::uint32_t nframes,
                            std::uint64_t start_frame, bool discontinuity) noexcept
 {
+    for (std::uint32_t i = 0; i < stage.mix_count; ++i) {
+        mixOne(mix_bindings_[stage.mix_offset + i], nframes);
+    }
+
     StreamState state{true, discontinuity};
     for (std::uint32_t i = 0; i < stage.n_inputs; ++i) {
         const StreamState *input = input_states_[stage.input_offset + i];

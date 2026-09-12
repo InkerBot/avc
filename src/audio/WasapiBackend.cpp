@@ -388,6 +388,8 @@ struct WasapiBackend::Impl {
     std::array<SlotRing, kMaxSlots> output_rings{};
     std::atomic<std::uint32_t> input_high{0};
     std::atomic<std::uint32_t> output_high{0};
+    std::atomic<PhysicalEndpoint *> master_input{nullptr};
+    std::atomic<PhysicalEndpoint *> master_output{nullptr};
     UsbIpAudioManager usbip;
 
     std::array<std::array<types::Sample, types::kMaxQuantum>, kMaxSlots> input_planes{};
@@ -407,10 +409,14 @@ struct WasapiBackend::Impl {
     std::atomic<std::uint64_t> jitter_max{0};
     std::atomic<std::uint32_t> actual_quantum{0};
     std::atomic<std::uint32_t> actual_rate{0};
+    std::atomic<std::uint32_t> input_latency_frames{0};
+    std::atomic<std::uint32_t> output_latency_frames{0};
+    std::atomic<bool> io_latency_known{false};
     std::atomic<int> sched_policy{-1};
     std::atomic<int> sched_priority{0};
     std::atomic<std::int32_t> audio_tid{0};
     std::uint64_t last_wakeup = 0;
+    std::uint32_t last_wakeup_frames = 0;
 
     Impl()
     {
@@ -519,6 +525,7 @@ struct WasapiBackend::Impl {
             config.sampleRate = format.sample_rate;
             config.periodSizeInFrames = format.quantum;
             config.periods = force_quantum ? 2 : 0;
+            config.noFixedSizedCallback = force_quantum ? MA_FALSE : MA_TRUE;
             config.performanceProfile = ma_performance_profile_low_latency;
             config.dataCallback = &PhysicalEndpoint::dataCallback;
             config.pUserData = endpoint.get();
@@ -538,7 +545,15 @@ struct WasapiBackend::Impl {
                     spec.exclusive ? ma_share_mode_exclusive : ma_share_mode_shared;
                 if (id) config.playback.pDeviceID = &*id;
             }
-            const ma_result result = ma_device_init(&context, &config, &endpoint->device);
+            ma_result result = ma_device_init(&context, &config, &endpoint->device);
+            if (result != MA_SUCCESS && !force_quantum) {
+                spdlog::warn("WASAPI endpoint '{}' rejected the requested {}-frame period; "
+                             "retrying with its native low-latency period",
+                             spec.target, format.quantum);
+                config.periodSizeInFrames = 0;
+                config.periods = 0;
+                result = ma_device_init(&context, &config, &endpoint->device);
+            }
             if (result != MA_SUCCESS) {
                 error = "cannot open WASAPI endpoint '" + spec.target + "'"
                         + (spec.exclusive ? " in exclusive mode: " : ": ")
@@ -547,6 +562,14 @@ struct WasapiBackend::Impl {
                 return false;
             }
             endpoint->open = true;
+            const std::uint32_t period = capture
+                                             ? endpoint->device.capture.internalPeriodSizeInFrames
+                                             : endpoint->device.playback.internalPeriodSizeInFrames;
+            const std::uint32_t buffer = capture
+                                             ? endpoint->device.wasapi.actualBufferSizeInFramesCapture
+                                             : endpoint->device.wasapi.actualBufferSizeInFramesPlayback;
+            spdlog::debug("WASAPI endpoint '{}': period={} frames, buffer={} frames",
+                          spec.target, period, buffer);
             endpoints.push_back(std::move(endpoint));
         }
         endpoint_specs = specs;
@@ -571,9 +594,64 @@ struct WasapiBackend::Impl {
 
     void stopEndpoints() noexcept
     {
+        master_input.store(nullptr, std::memory_order_release);
+        master_output.store(nullptr, std::memory_order_release);
         for (const auto &endpoint : endpoints) endpoint->close();
         endpoints.clear();
         endpoint_specs.clear();
+        io_latency_known.store(false, std::memory_order_relaxed);
+        input_latency_frames.store(0, std::memory_order_relaxed);
+        output_latency_frames.store(0, std::memory_order_relaxed);
+    }
+
+    void refreshLatencyEstimate() noexcept
+    {
+        const PhysicalEndpoint *input_master = master_input.load(std::memory_order_acquire);
+        const PhysicalEndpoint *master = master_output.load(std::memory_order_acquire);
+        const std::uint32_t driver_period =
+            master != nullptr ? master->device.playback.internalPeriodSizeInFrames
+            : input_master != nullptr ? input_master->device.capture.internalPeriodSizeInFrames
+                                      : format.quantum;
+        std::uint32_t input_frames = 0;
+        std::uint32_t output_frames = 0;
+        bool known = false;
+        for (const auto &endpoint_ptr : endpoints) {
+            const PhysicalEndpoint &endpoint = *endpoint_ptr;
+            if (!endpoint.open || endpoint.dormant) continue;
+            if (producesSignal(endpoint.spec.kind)) {
+                const std::uint32_t period = endpoint.spec.mode == EndpointMode::ProcessLoopback
+                                                 ? format.quantum
+                                                 : endpoint.device.capture.internalPeriodSizeInFrames;
+                const std::uint32_t device = endpoint.spec.mode == EndpointMode::ProcessLoopback
+                                                 ? 0
+                                                 : endpoint.device.wasapi.actualBufferSizeInFramesCapture;
+                const std::uint32_t ring = &endpoint == input_master
+                                               ? 0
+                                               : std::min<std::uint32_t>(
+                                                     kEndpointRingFrames / 2,
+                                                     std::max({format.quantum * 3,
+                                                               driver_period * 3, period * 3,
+                                                               endpoint.ring_target_frames}));
+                input_frames = std::max(input_frames, device + ring);
+                known = true;
+            } else {
+                const std::uint32_t device =
+                    endpoint.device.wasapi.actualBufferSizeInFramesPlayback;
+                std::uint32_t ring = 0;
+                if (&endpoint != master) {
+                    const std::uint32_t period =
+                        endpoint.device.playback.internalPeriodSizeInFrames;
+                    ring = std::min<std::uint32_t>(
+                        kEndpointRingFrames / 2,
+                        std::max(format.quantum * 3, period * 3));
+                }
+                output_frames = std::max(output_frames, device + ring);
+                known = true;
+            }
+        }
+        input_latency_frames.store(input_frames, std::memory_order_relaxed);
+        output_latency_frames.store(output_frames, std::memory_order_relaxed);
+        io_latency_known.store(known, std::memory_order_relaxed);
     }
 
     bool startClock(std::string &error)
@@ -595,6 +673,7 @@ struct WasapiBackend::Impl {
             return false;
         }
         last_wakeup = 0;
+        last_wakeup_frames = 0;
         clock_running.store(true, std::memory_order_release);
         try {
             clock_thread = std::thread([this] { clockLoop(); });
@@ -676,11 +755,27 @@ struct WasapiBackend::Impl {
         return std::numeric_limits<std::uint32_t>::max();
     }
 
-    void process(std::uint32_t frame_count) noexcept
+    void prepareDeviceThread() noexcept
+    {
+        thread_local const Impl *prepared = nullptr;
+        if (prepared == this) return;
+        const rt::SchedInfo info = rt::currentSchedInfo();
+        sched_policy.store(info.policy, std::memory_order_relaxed);
+        sched_priority.store(info.priority, std::memory_order_relaxed);
+        audio_tid.store(info.tid, std::memory_order_relaxed);
+        rt::enableFlushToZero();
+        prepared = this;
+    }
+
+    void process(std::uint32_t frame_count, PhysicalEndpoint *direct_input = nullptr,
+                 const float *direct_input_data = nullptr, bool direct_input_silent = true,
+                 PhysicalEndpoint *direct_output_endpoint = nullptr,
+                 float *direct_output = nullptr) noexcept
     {
         const std::uint64_t wake = nowNs();
-        const std::uint64_t expected = format.sample_rate > 0
-                                           ? 1000000000ULL * frame_count / format.sample_rate
+        const std::uint64_t expected = format.sample_rate > 0 && last_wakeup_frames > 0
+                                           ? 1000000000ULL * last_wakeup_frames
+                                                 / format.sample_rate
                                            : 0;
         if (last_wakeup > 0 && wake > last_wakeup + expected) {
             const std::uint64_t late = wake - last_wakeup - expected;
@@ -688,7 +783,15 @@ struct WasapiBackend::Impl {
             if (expected > 0 && late > expected / 2) xruns.fetch_add(1);
         }
         last_wakeup = wake;
+        last_wakeup_frames = frame_count;
         actual_quantum.store(frame_count, std::memory_order_relaxed);
+
+        if (direct_output_endpoint != nullptr && direct_output != nullptr) {
+            std::fill_n(direct_output,
+                        static_cast<std::size_t>(frame_count)
+                            * direct_output_endpoint->spec.channels,
+                        0.0F);
+        }
 
         std::uint32_t offset = 0;
         while (offset < frame_count) {
@@ -705,6 +808,20 @@ struct WasapiBackend::Impl {
                 auto &plane = input_planes[slot];
                 if (usb != nullptr && channel >= 0) {
                     usb->pullPlayback(static_cast<std::uint32_t>(channel), plane.data(), count);
+                    input_ptrs[slot] = plane.data();
+                } else if (direct_input != nullptr && endpoint == direct_input && channel >= 0
+                           && static_cast<std::uint32_t>(channel)
+                                  < direct_input->spec.channels) {
+                    if (direct_input_silent || direct_input_data == nullptr) {
+                        std::fill_n(plane.data(), count, 0.0F);
+                    } else {
+                        for (std::uint32_t frame = 0; frame < count; ++frame) {
+                            plane[frame] = direct_input_data[
+                                static_cast<std::size_t>(offset + frame)
+                                    * direct_input->spec.channels
+                                + static_cast<std::uint32_t>(channel)];
+                        }
+                    }
                     input_ptrs[slot] = plane.data();
                 } else if (endpoint != nullptr && channel >= 0) {
                     input_rings[slot].pull(plane.data(), count, format.quantum,
@@ -739,11 +856,23 @@ struct WasapiBackend::Impl {
                               std::memory_order_relaxed);
 
             for (std::uint32_t slot = 0; slot < out_count; ++slot) {
-                if (output_endpoint[slot].load(std::memory_order_acquire) != nullptr
-                    && !output_rings[slot].pushPlane(output_planes[slot].data(), count))
-                    xruns.fetch_add(1, std::memory_order_relaxed);
-                UsbIpAudioDevice *usb = output_usb[slot].load(std::memory_order_acquire);
+                PhysicalEndpoint *endpoint =
+                    output_endpoint[slot].load(std::memory_order_acquire);
                 const int channel = output_channel[slot].load(std::memory_order_relaxed);
+                if (endpoint == direct_output_endpoint && direct_output != nullptr
+                    && channel >= 0 && static_cast<std::uint32_t>(channel)
+                                           < direct_output_endpoint->spec.channels) {
+                    for (std::uint32_t frame = 0; frame < count; ++frame) {
+                        direct_output[static_cast<std::size_t>(offset + frame)
+                                          * direct_output_endpoint->spec.channels
+                                      + static_cast<std::uint32_t>(channel)]
+                            += output_planes[slot][frame];
+                    }
+                } else if (endpoint != nullptr
+                           && !output_rings[slot].pushPlane(output_planes[slot].data(), count)) {
+                    xruns.fetch_add(1, std::memory_order_relaxed);
+                }
+                UsbIpAudioDevice *usb = output_usb[slot].load(std::memory_order_acquire);
                 if (usb != nullptr && channel >= 0)
                     usb->pushCapture(static_cast<std::uint32_t>(channel),
                                      output_planes[slot].data(), count);
@@ -767,12 +896,22 @@ void WasapiBackend::Impl::PhysicalEndpoint::process(void *raw_output, const void
     const bool capture = producesSignal(spec.kind);
     if (capture) {
         const auto *input = static_cast<const float *>(raw_input);
+        if (owner->master_input.load(std::memory_order_acquire) == this) {
+            owner->prepareDeviceThread();
+            owner->process(frames, this, input, input == nullptr);
+            return;
+        }
         if (input != nullptr) pushCapture(input, frames, false);
         return;
     }
 
     auto *output = static_cast<float *>(raw_output);
     if (output == nullptr) return;
+    if (owner->master_output.load(std::memory_order_acquire) == this) {
+        owner->prepareDeviceThread();
+        owner->process(frames, nullptr, nullptr, true, this, output);
+        return;
+    }
     std::fill_n(output, static_cast<std::size_t>(frames) * spec.channels, 0.0F);
     std::uint32_t offset = 0;
     while (offset < frames) {
@@ -1160,6 +1299,11 @@ BackendStats WasapiBackend::stats() const noexcept
     out.sample_rate = impl_->format.sample_rate;
     out.actual_quantum = impl_->actual_quantum.load(std::memory_order_relaxed);
     out.actual_rate = impl_->actual_rate.load(std::memory_order_relaxed);
+    out.input_latency_frames = impl_->input_latency_frames.load(std::memory_order_relaxed);
+    out.output_latency_frames = impl_->output_latency_frames.load(std::memory_order_relaxed);
+    out.io_latency_known = impl_->io_latency_known.load(std::memory_order_relaxed);
+    out.device_driven = impl_->master_output.load(std::memory_order_relaxed) != nullptr
+                        || impl_->master_input.load(std::memory_order_relaxed) != nullptr;
     out.sched_policy = impl_->sched_policy.load(std::memory_order_relaxed);
     out.sched_priority = impl_->sched_priority.load(std::memory_order_relaxed);
     out.audio_tid = impl_->audio_tid.load(std::memory_order_relaxed);
@@ -1229,6 +1373,11 @@ bool WasapiBackend::bindIo(const std::vector<IoRequest> &requests,
         return std::pair{static_cast<int>(spec.kind), spec.target};
     });
 
+    // Quiesce every possible graph driver before replacing slot mappings. A
+    // playback endpoint can be the driver after the first successful binding.
+    impl_->pauseEndpoints();
+    impl_->master_input.store(nullptr, std::memory_order_release);
+    impl_->master_output.store(nullptr, std::memory_order_release);
     impl_->stopClock();
     // A Windows process-loopback IAudioClient can acknowledge Stop/Reset/Start
     // yet stop delivering capture events afterwards. Recreate those clients on
@@ -1246,8 +1395,6 @@ bool WasapiBackend::bindIo(const std::vector<IoRequest> &requests,
             return false;
         }
         spdlog::debug("WASAPI graph binding: physical endpoints ready");
-    } else {
-        impl_->pauseEndpoints();
     }
 
     for (std::size_t slot = 0; slot < kMaxSlots; ++slot) {
@@ -1322,12 +1469,42 @@ bool WasapiBackend::bindIo(const std::vector<IoRequest> &requests,
         }
     }
 
+    // Let the first physical playback endpoint drive the graph directly. This
+    // removes both the independent waitable-timer wakeup and one elastic output
+    // ring from the primary listening path. Additional outputs remain buffered
+    // because their hardware clocks can drift independently.
+    Impl::PhysicalEndpoint *master = nullptr;
+    for (const IoRequest &request : requests) {
+        if (!isVirtual(request.kind) && !producesSignal(request.kind)) {
+            master = impl_->findEndpoint(request.kind, request.target);
+            break;
+        }
+    }
+    Impl::PhysicalEndpoint *input_master = nullptr;
+    if (master == nullptr) {
+        for (const IoRequest &request : requests) {
+            if (isVirtual(request.kind) || !producesSignal(request.kind)) continue;
+            Impl::PhysicalEndpoint *candidate =
+                impl_->findEndpoint(request.kind, request.target);
+            if (candidate != nullptr
+                && candidate->spec.mode != Impl::EndpointMode::ProcessLoopback) {
+                input_master = candidate;
+                break;
+            }
+        }
+    }
+    impl_->last_wakeup = 0;
+    impl_->last_wakeup_frames = 0;
+    impl_->master_input.store(input_master, std::memory_order_release);
+    impl_->master_output.store(master, std::memory_order_release);
+    impl_->refreshLatencyEstimate();
+
     if (!impl_->startEndpoints(error)) {
         std::string ignored;
         (void)impl_->startClock(ignored);
         return false;
     }
-    if (!impl_->startClock(error)) {
+    if (master == nullptr && input_master == nullptr && !impl_->startClock(error)) {
         impl_->stopEndpoints();
         return false;
     }

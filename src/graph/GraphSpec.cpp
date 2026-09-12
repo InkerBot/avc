@@ -216,6 +216,17 @@ std::optional<GraphSpec> GraphSpec::parse(const std::string &text, std::string &
                 || !parseEndpoint(edge["to"], decoded.to, error, path + ".to")) {
                 return std::nullopt;
             }
+            if (const auto gain = edge.find("gain_db"); gain != edge.end()) {
+                if (!gain->is_number()) {
+                    error = path + ".gain_db must be a number";
+                    return std::nullopt;
+                }
+                decoded.gain_db = gain->get<float>();
+                if (!std::isfinite(decoded.gain_db)) {
+                    error = path + ".gain_db must be finite";
+                    return std::nullopt;
+                }
+            }
             spec.edges.push_back(std::move(decoded));
         }
     } else if (root.contains("edges")) {
@@ -287,10 +298,14 @@ std::string GraphSpec::dump(int indent) const
     }
 
     for (const SpecEdge &edge : edges) {
-        root["edges"].push_back({
+        json entry = {
             {"from", {{"node", edge.from.node}, {"port", dumpPort(edge.from.port)}}},
             {"to", {{"node", edge.to.node}, {"port", dumpPort(edge.to.port)}}},
-        });
+        };
+        if (edge.gain_db != 0.0F) {
+            entry["gain_db"] = edge.gain_db;
+        }
+        root["edges"].push_back(std::move(entry));
     }
     return root.dump(indent);
 }

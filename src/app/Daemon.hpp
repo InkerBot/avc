@@ -66,7 +66,8 @@ public:
     void requestForceRestart();
 
     nlohmann::json usbIpDriverStatus() const;
-    bool installUsbIpDriver(std::string &error, bool trusted_local = false);
+    bool installUsbIpDriver(std::string &error, bool trusted_local = false,
+                            void *owner_window = nullptr);
 
     graph::GraphSpec spec() const;
 

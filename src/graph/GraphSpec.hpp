@@ -21,6 +21,10 @@ struct SpecEndpoint {
 struct SpecEdge {
     SpecEndpoint from;
     SpecEndpoint to;
+
+    // Audio edges can be trimmed independently when several of them feed the
+    // same input. Kept on every edge so presets remain a simple flat graph.
+    float gain_db = 0.0F;
 };
 
 struct SpecNode {

@@ -1,10 +1,23 @@
 import { useState } from 'react'
 import { useStore } from '../store'
 import { useTranslation } from 'react-i18next'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 
-function Stat({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
+function Stat({
+  label,
+  value,
+  warn,
+  secondary,
+  adaptive,
+}: {
+  label: string
+  value: string
+  warn?: boolean
+  secondary?: boolean
+  adaptive?: boolean
+}) {
   return (
-    <div className={`stat${warn ? ' stat--warn' : ''}`}>
+    <div className={`stat${warn ? ' stat--warn' : ''}${secondary ? ' stat--secondary' : ''}${adaptive ? ' stat--adaptive' : ''}`}>
       <span className="stat__label">{label}</span>
       <span className="stat__value">{value}</span>
     </div>
@@ -16,10 +29,10 @@ export function StatusBar() {
   const requestForceRestart = useStore((s) => s.forceRestartEngine)
   const [restarting, setRestarting] = useState(false)
   const [restartError, setRestartError] = useState<string | null>(null)
+  const [confirmRestart, setConfirmRestart] = useState(false)
   const { t } = useTranslation()
 
   const forceRestart = async () => {
-    if (!window.confirm(t('status.forceRestartConfirm'))) return
     setRestarting(true)
     setRestartError(null)
     try {
@@ -39,9 +52,14 @@ export function StatusBar() {
     )
   }
 
+  const blockValue = `${tel.quantum} @ ${(tel.sampleRate / 1000).toFixed(1)} kHz`
+  const buffersValue = t('status.buffersValue', { slots: tel.bufferSlots, nodes: tel.nodes })
+  const graphValue = t('status.graphValue', { gen: tel.generation, swaps: tel.swaps })
+  const schedulingValue = tel.realtime ? t('status.realtime') : t('status.notRealtime')
+
   return (
     <footer className="status">
-      <Stat label={t('status.block')} value={`${tel.quantum} @ ${(tel.sampleRate / 1000).toFixed(1)} kHz`} />
+      <Stat label={t('status.block')} value={blockValue} adaptive />
       <Stat
         label={t('status.latency')}
         value={t('status.latencyValue', {
@@ -62,27 +80,56 @@ export function StatusBar() {
       <Stat label={t('status.xruns')} value={String(tel.xruns)} warn={tel.xruns > 0} />
       <Stat
         label={t('status.buffers')}
-        value={t('status.buffersValue', { slots: tel.bufferSlots, nodes: tel.nodes })}
+        value={buffersValue}
+        secondary
       />
       <Stat
         label={t('status.graph')}
-        value={t('status.graphValue', { gen: tel.generation, swaps: tel.swaps })}
+        value={graphValue}
+        secondary
       />
       <Stat
         label={t('status.scheduling')}
-        value={tel.realtime ? t('status.realtime') : t('status.notRealtime')}
+        value={schedulingValue}
         warn={!tel.realtime}
+        secondary
       />
+      <details className="status__details">
+        <summary className="button button--small">{t('status.more')}</summary>
+        <div className="status__details-panel">
+          <Stat label={t('status.block')} value={blockValue} />
+          <Stat label={t('status.buffers')} value={buffersValue} />
+          <Stat label={t('status.graph')} value={graphValue} />
+          <Stat
+            label={t('status.scheduling')}
+            value={schedulingValue}
+            warn={!tel.realtime}
+          />
+          {restartError && <span className="field__error">{restartError}</span>}
+          <button
+            className="button button--small button--danger"
+            disabled={restarting}
+            onClick={() => setConfirmRestart(true)}
+          >
+            {restarting ? t('status.forceRestarting') : t('status.forceRestart')}
+          </button>
+        </div>
+      </details>
       <span className="status__spacer" />
-      {restartError && <span className="field__error">{restartError}</span>}
-      <button
-        className="button button--small button--danger"
-        disabled={restarting}
-        title={t('status.forceRestartHint')}
-        onClick={() => void forceRestart()}
+      <ConfirmDialog
+        open={confirmRestart}
+        title={t('status.forceRestart')}
+        confirmLabel={t('status.forceRestart')}
+        cancelLabel={t('app.cancel')}
+        confirmTone="danger"
+        onCancel={() => setConfirmRestart(false)}
+        onConfirm={() => {
+          setConfirmRestart(false)
+          void forceRestart()
+        }}
       >
-        {restarting ? t('status.forceRestarting') : t('status.forceRestart')}
-      </button>
+        <p>{t('status.forceRestartConfirm')}</p>
+      </ConfirmDialog>
     </footer>
   )
 }

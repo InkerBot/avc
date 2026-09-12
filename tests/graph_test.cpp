@@ -142,11 +142,6 @@ SpecNode pitch(const std::string &id, float semitones, float grain_ms = 40.0F)
             .params = {{"semitones", semitones}, {"grain_ms", grain_ms}}};
 }
 
-SpecNode mixer(const std::string &id, std::uint32_t inputs)
-{
-    return {.id = id, .type = "mixer", .inputs = inputs};
-}
-
 SpecNode splitter(const std::string &id, std::uint32_t outputs)
 {
     return {.id = id, .type = "splitter", .outputs = outputs};
@@ -159,7 +154,7 @@ bool isIoType(const std::string &type)
 }
 
 void connect(GraphSpec &spec, const std::string &from, const std::string &from_port,
-             const std::string &to, const std::string &to_port)
+             const std::string &to, const std::string &to_port, float gain_db = 0.0F)
 {
     const auto resolve = [&spec](const std::string &id, const std::string &port) {
         for (const SpecNode &node : spec.nodes) {
@@ -169,7 +164,8 @@ void connect(GraphSpec &spec, const std::string &from, const std::string &from_p
         }
         return port;
     };
-    spec.edges.push_back({{from, resolve(from, from_port)}, {to, resolve(to, to_port)}});
+    spec.edges.push_back(
+        {{from, resolve(from, from_port)}, {to, resolve(to, to_port)}, gain_db});
 }
 
 std::unique_ptr<CompiledGraph> compileOf(const GraphSpec &spec, std::string &error)
@@ -282,13 +278,7 @@ TEST(GraphCompiler, RejectsAFeedbackLoop)
     spec.nodes = {input("mic"), gain("a"), gain("b"), output("spk")};
     connect(spec, "mic", "out", "a", "in");
     connect(spec, "a", "out", "b", "in");
-    connect(spec, "b", "out", "spk", "in");
-    spec.nodes.push_back(mixer("mix", 2));
-    spec.edges.clear();
-    connect(spec, "mic", "out", "mix", "in_1");
-    connect(spec, "mix", "out", "a", "in");
-    connect(spec, "a", "out", "b", "in");
-    connect(spec, "b", "out", "mix", "in_2");
+    connect(spec, "b", "out", "a", "in");
     connect(spec, "b", "out", "spk", "in");
 
     std::string error;
@@ -314,17 +304,25 @@ TEST(GraphCompiler, RejectsDuplicateNodeId)
     EXPECT_NE(error.find("duplicate node id"), std::string::npos) << error;
 }
 
-TEST(GraphCompiler, RejectsTwoEdgesIntoOneInput)
+TEST(GraphCompiler, SumsTwoEdgesIntoOneInput)
 {
     GraphSpec spec;
     spec.nodes = {input("a", "mic_a"), input("b", "mic_b"), gain("g"), output("spk")};
-    connect(spec, "a", "out", "g", "in");
-    connect(spec, "b", "out", "g", "in");
+    connect(spec, "a", "out", "g", "in", -6.0F);
+    connect(spec, "b", "out", "g", "in", 6.0F);
     connect(spec, "g", "out", "spk", "in");
 
     std::string error;
-    EXPECT_EQ(GraphCompiler::compile(spec, envFor(spec), nullptr, error), nullptr);
-    EXPECT_NE(error.find("use a mixer"), std::string::npos) << error;
+    auto graph = GraphCompiler::compile(spec, envFor(spec), nullptr, error);
+    ASSERT_NE(graph, nullptr) << error;
+
+    Block block(2, 1, 64);
+    block.fillInput(0, 0.25F);
+    block.fillInput(1, 0.5F);
+    graph->process(block.context());
+    const float expected = 0.25F * std::pow(10.0F, -6.0F / 20.0F)
+                           + 0.5F * std::pow(10.0F, 6.0F / 20.0F);
+    EXPECT_NEAR(block.output(0), expected, 1e-5F);
 }
 
 TEST(GraphCompiler, RejectsAnIoNodeWithNothingSelected)
@@ -463,14 +461,12 @@ TEST(GraphCompiler, FanOutDoesNotCopy)
     EXPECT_NEAR(block.output(1), 0.5F, 1e-5F);
 }
 
-TEST(GraphCompiler, MixerSumsItsInputs)
+TEST(GraphCompiler, OutputSumsEdgesWithIndependentGain)
 {
     GraphSpec spec;
-    spec.nodes = {input("a", "mic_a"), input("b", "mic_b"), mixer("mix", 2),
-                  output("spk")};
-    connect(spec, "a", "out", "mix", "in_1");
-    connect(spec, "b", "out", "mix", "in_2");
-    connect(spec, "mix", "out", "spk", "in");
+    spec.nodes = {input("a", "mic_a"), input("b", "mic_b"), output("spk")};
+    connect(spec, "a", "out", "spk", "in", -6.0F);
+    connect(spec, "b", "out", "spk", "in", 6.0F);
 
     std::string error;
     auto graph = GraphCompiler::compile(spec, envFor(spec), nullptr, error);
@@ -482,7 +478,9 @@ TEST(GraphCompiler, MixerSumsItsInputs)
     ProcessContext ctx = block.context();
     graph->process(ctx);
 
-    EXPECT_NEAR(block.output(0), 0.75F, 1e-5F);
+    const float expected = 0.25F * std::pow(10.0F, -6.0F / 20.0F)
+                           + 0.5F * std::pow(10.0F, 6.0F / 20.0F);
+    EXPECT_NEAR(block.output(0), expected, 1e-5F);
 }
 
 TEST(GraphCompiler, SplitterFeedsEveryOutputIndependently)
@@ -588,13 +586,12 @@ TEST(GraphLatency, TakesTheWorstPathNotTheSum)
 {
     GraphSpec spec;
     spec.nodes = {input("mic"), splitter("split", 2), pitch("slow", 5.0F, 100.0F),
-                  pitch("fast", 5.0F, 20.0F), mixer("mix", 2), output("spk")};
+                  pitch("fast", 5.0F, 20.0F), output("spk")};
     connect(spec, "mic", "out", "split", "in");
     connect(spec, "split", "out_1", "slow", "in");
     connect(spec, "split", "out_2", "fast", "in");
-    connect(spec, "slow", "out", "mix", "in_1");
-    connect(spec, "fast", "out", "mix", "in_2");
-    connect(spec, "mix", "out", "spk", "in");
+    connect(spec, "slow", "out", "spk", "in");
+    connect(spec, "fast", "out", "spk", "in");
 
     std::string error;
     auto graph = compileOf(spec, error);
@@ -925,14 +922,13 @@ TEST(ColdDomain, OneCrossingServesEveryConsumerInTheSameDomain)
 {
     GraphSpec spec;
     spec.nodes = {input("mic"),      gain("dry"),      inDomain(gain("a")),
-                  inDomain(gain("b")), mixer("mix", 2), output("spk")};
+                  inDomain(gain("b")), output("spk")};
     spec.domains["cold"] = {128, 1};
     connect(spec, "mic", "out", "dry", "in");
     connect(spec, "dry", "out", "a", "in");
     connect(spec, "dry", "out", "b", "in");
-    connect(spec, "a", "out", "mix", "in_1");
-    connect(spec, "b", "out", "mix", "in_2");
-    connect(spec, "mix", "out", "spk", "in");
+    connect(spec, "a", "out", "spk", "in");
+    connect(spec, "b", "out", "spk", "in");
 
     std::string error;
     auto graph = compileOf(spec, error);
@@ -1454,6 +1450,24 @@ TEST(PortTypes, RefusesAPortCarryingSomethingNothingDeclares)
     EXPECT_NE(error.find("nonsense"), std::string::npos) << error;
 }
 
+TEST(PortTypes, RefusesMultipleEdgesOnAValueInput)
+{
+    GraphSpec spec;
+    spec.nodes = {input("a", "a"), input("b", "b"),
+                  node("ruler_a", "test_text_ruler"),
+                  node("ruler_b", "test_text_ruler"),
+                  node("length", "test_text_length"), output("spk")};
+    connect(spec, "a", "out", "ruler_a", "in");
+    connect(spec, "b", "out", "ruler_b", "in");
+    connect(spec, "ruler_a", "out", "length", "in");
+    connect(spec, "ruler_b", "out", "length", "in");
+    connect(spec, "length", "out", "spk", "in");
+
+    std::string error;
+    EXPECT_EQ(compileOf(spec, error), nullptr);
+    EXPECT_NE(error.find("only audio inputs"), std::string::npos) << error;
+}
+
 TEST(PortTypes, CarriesTextFromOneNodeToTheNext)
 {
     std::string error;
@@ -1583,6 +1597,7 @@ TEST(PortTypes, PacesADomainThatHasNothingButValuesOnIt)
 TEST(GraphSpec, RoundTripsThroughJson)
 {
     GraphSpec original = passthrough(-3.0F);
+    original.edges[0].gain_db = -4.5F;
     original.nodes[1].ui_x = 120.0F;
     original.nodes[1].ui_y = 80.0F;
     original.nodes[1].ui_width = 320.0F;
@@ -1599,9 +1614,52 @@ TEST(GraphSpec, RoundTripsThroughJson)
     EXPECT_FLOAT_EQ(parsed->nodes[1].ui_width, 320.0F);
     EXPECT_FLOAT_EQ(parsed->nodes[1].ui_height, 180.0F);
     ASSERT_EQ(parsed->edges.size(), original.edges.size());
+    EXPECT_FLOAT_EQ(parsed->edges[0].gain_db, -4.5F);
 
     auto graph = GraphCompiler::compile(*parsed, envFor(*parsed), nullptr, error);
     EXPECT_NE(graph, nullptr) << error;
+}
+
+TEST(GraphSpec, PreservesExplicitMixerNodesAndRouteGains)
+{
+    const std::string graph_json = R"({
+        "version": 1,
+        "nodes": [
+            {"id":"a","type":"capture","outputs":1,"params":{"source":"a"}},
+            {"id":"b","type":"capture","outputs":1,"params":{"source":"b"}},
+            {"id":"mix","type":"mixer","inputs":2,"params":{}},
+            {"id":"spk","type":"playback","inputs":1,"params":{"device":"spk"}}
+        ],
+        "edges": [
+            {"from":{"node":"a","port":"out_1"},"to":{"node":"mix","port":"in_1"},"gain_db":-3},
+            {"from":{"node":"b","port":"out_1"},"to":{"node":"mix","port":"in_2"}},
+            {"from":{"node":"mix","port":"out"},"to":{"node":"spk","port":"in_1"},"gain_db":2}
+        ]
+    })";
+
+    std::string error;
+    const auto parsed = GraphSpec::parse(graph_json, error);
+    ASSERT_TRUE(parsed.has_value()) << error;
+    EXPECT_EQ(parsed->nodes.size(), 4U);
+    ASSERT_EQ(parsed->edges.size(), 3U);
+    EXPECT_EQ(parsed->edges[0].from.node, "a");
+    EXPECT_EQ(parsed->edges[0].to.node, "mix");
+    EXPECT_FLOAT_EQ(parsed->edges[0].gain_db, -3.0F);
+    EXPECT_EQ(parsed->edges[1].from.node, "b");
+    EXPECT_FLOAT_EQ(parsed->edges[1].gain_db, 0.0F);
+    EXPECT_EQ(parsed->edges[2].from.node, "mix");
+    EXPECT_EQ(parsed->edges[2].to.node, "spk");
+    EXPECT_FLOAT_EQ(parsed->edges[2].gain_db, 2.0F);
+
+    auto graph = compileOf(*parsed, error);
+    ASSERT_NE(graph, nullptr) << error;
+    Block block(2, 1, 64);
+    block.fillInput(0, 2.0F);
+    block.fillInput(1, 4.0F);
+    graph->process(block.context());
+    const float expected = (2.0F * std::pow(10.0F, -3.0F / 20.0F) + 4.0F)
+                           * std::pow(10.0F, 2.0F / 20.0F);
+    EXPECT_NEAR(block.output(0), expected, 1e-4F);
 }
 
 TEST(GraphSpec, ReportsMalformedJson)
@@ -1620,6 +1678,7 @@ TEST(GraphSpec, RejectsWrongFieldTypesWithoutThrowing)
              R"({"nodes":[{"id":"g","type":"gain","ui":{"width":0}}]})",
              R"({"nodes":[{"id":"g","type":"gain","ui":{"height":"large"}}]})",
              R"({"nodes":[],"edges":[{"from":{"node":"a","port":{}},"to":{}}]})",
+             R"({"nodes":[],"edges":[{"from":{"node":"a","port":0},"to":{"node":"b","port":0},"gain_db":"loud"}]})",
              R"({"nodes":[],"domains":{"cold":{"block":-1}}})",
          }) {
         std::string error;

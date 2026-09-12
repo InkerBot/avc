@@ -140,26 +140,10 @@ graph::GraphSpec defaultSpec(const Options &options, const std::string &input_ta
         }
     }
 
-    std::uint32_t channels = 0;
-    for (const auto &[id, count] : sources) {
-        channels += count;
-    }
-
-    const bool needs_mixer = channels > 1;
-    if (needs_mixer) {
-        spec.nodes.push_back(
-            {.id = "mix", .type = "mixer", .inputs = channels, .ui_x = 260.0F});
-    }
-
-    std::uint32_t next = 1;
     for (const auto &[id, count] : sources) {
         for (std::uint32_t c = 0; c < count; ++c) {
             const std::string port = "out_" + std::to_string(c + 1);
-            if (needs_mixer) {
-                spec.edges.push_back({{id, port}, {"mix", "in_" + std::to_string(next++)}});
-            } else {
-                spec.edges.push_back({{id, port}, {"gain", std::string("in")}});
-            }
+            spec.edges.push_back({{id, port}, {"gain", std::string("in")}});
         }
     }
 
@@ -168,9 +152,6 @@ graph::GraphSpec defaultSpec(const Options &options, const std::string &input_ta
                           .params = {{"gain_db", options.gain_db}},
                           .ui_x = 440.0F});
     spec.nodes.push_back({.id = "meter", .type = "meter", .ui_x = 620.0F});
-    if (needs_mixer) {
-        spec.edges.push_back({{"mix", std::string("out")}, {"gain", std::string("in")}});
-    }
     spec.edges.push_back({{"gain", std::string("out")}, {"meter", std::string("in")}});
 
     for (const auto &[id, count] : sinks) {

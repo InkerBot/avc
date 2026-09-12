@@ -1,13 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import { useStore } from '../store'
 import type { AudioDevice } from '../api'
 
-type Kind = 'input' | 'output' | 'app' | 'published'
+type Kind = 'input' | 'output' | 'app'
 
-function kindOf(device: AudioDevice, published: Set<string>): Kind {
-  if (published.has(device.name)) return 'published'
+function kindOf(device: AudioDevice): Kind {
   if (device.mediaClass.startsWith('Stream/')) return 'app'
   if (device.mediaClass === 'Audio/Sink') return 'output'
   return 'input'
@@ -62,14 +68,19 @@ export function DevicePicker({
   const nodes = useStore((s) => s.nodes)
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
   const box = useRef<HTMLDivElement>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+  const panel = useRef<HTMLDivElement>(null)
+  const panelId = useId()
+  const [placement, setPlacement] = useState({ left: 0, top: 0, width: 280, maxHeight: 360 })
   const { t } = useTranslation()
 
   const kindLabel: Record<Kind, string> = {
     input: t('picker.kind.mic'),
     output: t('picker.kind.out'),
     app: t('picker.kind.app'),
-    published: t('picker.kind.published'),
   }
 
   const published = useMemo(
@@ -93,9 +104,9 @@ export function DevicePicker({
 
     return usable.map((d) => ({
       device: d,
-      kind: kindOf(d, published),
+      kind: kindOf(d),
       title: titleOf(d),
-      detail: (seen.get(titleOf(d)) ?? 0) > 1 ? `${d.name} · #${d.id}` : d.name,
+      detail: (seen.get(titleOf(d)) ?? 0) > 1 ? `${d.name} · #${d.id}` : '',
       channels: d[wanted],
     }))
   }, [devices, published, role])
@@ -121,6 +132,69 @@ export function DevicePicker({
     return () => document.removeEventListener('mousedown', close)
   }, [open])
 
+  useEffect(() => {
+    if (!open) return
+    const place = () => {
+      const rect = trigger.current?.getBoundingClientRect()
+      if (!rect) return
+      const gap = 6
+      const roomBelow = window.innerHeight - rect.bottom - gap
+      const roomAbove = rect.top - gap
+      const maxHeight = Math.max(180, Math.min(420, Math.max(roomBelow, roomAbove) - 8))
+      const openAbove = roomBelow < 260 && roomAbove > roomBelow
+      setPlacement({
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - Math.max(rect.width, 280) - 8)),
+        top: openAbove ? Math.max(8, rect.top - maxHeight - gap) : rect.bottom + gap,
+        width: Math.max(rect.width, 280),
+        maxHeight,
+      })
+    }
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [open])
+
+  const close = (restoreFocus = false) => {
+    setOpen(false)
+    if (restoreFocus) window.setTimeout(() => trigger.current?.focus())
+  }
+
+  const openPicker = () => {
+    setOpen(true)
+    setFilter('')
+    setRefreshing(true)
+    setRefreshError(null)
+    void refreshAudioDevices()
+      .catch((error: Error) => setRefreshError(error.message))
+      .finally(() => setRefreshing(false))
+  }
+
+  const navigateOptions = (event: ReactKeyboardEvent) => {
+    if (event.defaultPrevented) return
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      close(true)
+      return
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    const options = Array.from(panel.current?.querySelectorAll<HTMLButtonElement>('.picker__row') ?? [])
+    if (options.length === 0) return
+    event.preventDefault()
+    const current = options.indexOf(document.activeElement as HTMLButtonElement)
+    const next = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? options.length - 1
+        : event.key === 'ArrowDown'
+          ? Math.min(options.length - 1, current + 1)
+          : Math.max(0, current < 0 ? options.length - 1 : current - 1)
+    options[next].focus()
+  }
+
   const selected = rows.find((r) => r.device.name === value)
   const following = value.startsWith('@')
   const unavailable = Boolean(value && !following && !selected)
@@ -128,14 +202,25 @@ export function DevicePicker({
   return (
     <div className="picker" ref={box}>
       <button
+        ref={trigger}
         type="button"
         className={`picker__trigger${value ? '' : ' picker__trigger--empty'}${unavailable ? ' picker__trigger--gone' : ''}`}
         onClick={() => {
-          if (!open) void refreshAudioDevices()
-          setOpen((v) => !v)
-          setFilter('')
+          if (open) close()
+          else openPicker()
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown' && !open) {
+            event.preventDefault()
+            openPicker()
+          } else if (event.key === 'Escape' && open) {
+            event.preventDefault()
+            close(true)
+          }
         }}
         aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-controls={open ? panelId : undefined}
         aria-invalid={unavailable}
         title={unavailable ? t('picker.notHere') : undefined}
       >
@@ -146,7 +231,6 @@ export function DevicePicker({
               <span className="picker__title">
                 {value === '@default_source' ? t('picker.defaultInput') : t('picker.defaultOutput')}
               </span>
-              <span className="picker__sub">{t('picker.followsSystem')}</span>
             </>
           ) : selected ? (
             <>
@@ -165,7 +249,6 @@ export function DevicePicker({
             <>
               <span className="picker__badge picker__badge--gone">{t('picker.gone')}</span>
               <span className="picker__title">{value}</span>
-              <span className="picker__sub">{t('picker.notHere')}</span>
             </>
           ) : (
             <span className="picker__title picker__title--empty">
@@ -177,22 +260,41 @@ export function DevicePicker({
       </button>
 
       {open && (
-        <div className="picker__panel">
+        <div
+          ref={panel}
+          id={panelId}
+          className="picker__panel"
+          role="dialog"
+          aria-label={role === 'capture' ? t('picker.chooseCapture') : t('picker.choosePlayback')}
+          aria-busy={refreshing}
+          style={placement}
+          onKeyDown={navigateOptions}
+        >
           <input
             className="picker__filter"
             autoFocus
             value={filter}
             placeholder={t('picker.filter')}
             onChange={(e) => setFilter(e.target.value)}
-            onKeyDown={(e) => e.key === 'Escape' && setOpen(false)}
+            onKeyDown={navigateOptions}
           />
+
+          {refreshing && (
+            <p className="hint picker__notice" role="status">{t('picker.refreshing')}</p>
+          )}
+          {refreshError && (
+            <p className="field__error picker__notice" role="alert">
+              {t('picker.refreshFailed', { error: refreshError })}
+            </p>
+          )}
 
           <button
             type="button"
             className={`picker__row${following ? ' picker__row--on' : ''}`}
+            aria-pressed={following}
             onClick={() => {
               onChange(role === 'capture' ? '@default_source' : '@default_sink')
-              setOpen(false)
+              close(true)
             }}
           >
             <span className="picker__badge picker__badge--follow">{t('picker.auto')}</span>
@@ -200,7 +302,6 @@ export function DevicePicker({
               <span className="picker__row-title">
                 {role === 'capture' ? t('picker.defaultInput') : t('picker.defaultOutput')}
               </span>
-              <span className="picker__row-sub">{t('picker.followsSystem')}</span>
             </span>
           </button>
 
@@ -215,9 +316,10 @@ export function DevicePicker({
                   type="button"
                   key={row.device.name}
                   className={`picker__row${row.device.name === value ? ' picker__row--on' : ''}`}
+                  aria-pressed={row.device.name === value}
                   onClick={() => {
                     onChange(row.device.name)
-                    setOpen(false)
+                    close(true)
                   }}
                 >
                   <span className={`picker__badge picker__badge--${row.kind}`}>
@@ -225,7 +327,7 @@ export function DevicePicker({
                   </span>
                   <span className="picker__row-body">
                     <span className="picker__row-title">{row.title}</span>
-                    <span className="picker__row-sub">{row.detail}</span>
+                    {row.detail && <span className="picker__row-sub">{row.detail}</span>}
                   </span>
                   <span className="picker__row-ch">{t('picker.channels', { count: row.channels })}</span>
                 </button>
@@ -233,7 +335,9 @@ export function DevicePicker({
             </div>
           ))}
 
-          {groups.length === 0 && <p className="hint picker__empty">{t('picker.nothing')}</p>}
+          {groups.length === 0 && !refreshing && (
+            <p className="hint picker__empty">{t('picker.nothing')}</p>
+          )}
         </div>
       )}
     </div>

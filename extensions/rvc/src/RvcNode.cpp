@@ -580,12 +580,12 @@ class RvcSettings extends HTMLElement {
     const values = context.settings.get()
     const panel = document.createElement('section')
     panel.className = 'panel'
-    panel.append(text('h2', 'RVC 模型与设置', 'panel__title'))
+    panel.append(text('h2', 'RVC', 'panel__title'))
 
     this.defaultModel = document.createElement('input')
     this.defaultModel.value = values.default_model ?? ''
     this.defaultModel.placeholder = '/服务器上的路径/voice.avcrvc'
-    panel.append(this.field('默认模型', this.defaultModel, '节点未指定模型时使用。'))
+    panel.append(this.field('默认模型', this.defaultModel, '节点留空时使用。'))
 
     this.provider = document.createElement('select')
     for (const option of ['auto', 'cpu', 'cuda']) {
@@ -609,7 +609,7 @@ class RvcSettings extends HTMLElement {
     save.textContent = '保存并重启引擎'
     save.addEventListener('click', async () => {
       save.disabled = true
-      this.say('正在保存…')
+      this.say('保存中…')
       try {
         await context.settings.save({
           ...values,
@@ -627,7 +627,7 @@ class RvcSettings extends HTMLElement {
 
     const divider = document.createElement('div')
     divider.className = 'perf__gap'
-    panel.append(divider, text('h3', '导入 RVC .pth', 'perf__heading'))
+    panel.append(divider, text('h3', '导入 .pth', 'perf__heading'))
 
     this.nameInput = document.createElement('input')
     this.nameInput.placeholder = '模型名称'
@@ -643,7 +643,7 @@ class RvcSettings extends HTMLElement {
       if (this.file && !this.nameInput.value) this.nameInput.value = this.file.name.replace(/\.pth$/i, '')
     })
     panel.append(this.field('模型文件（.pth）', this.checkpointInput,
-      '只接受 RVC 推理模型；训练 checkpoint 会被安全拒绝。'))
+      '仅限 RVC 推理模型。'))
 
     const chooseIndex = document.createElement('input')
     chooseIndex.type = 'file'
@@ -651,8 +651,7 @@ class RvcSettings extends HTMLElement {
     chooseIndex.addEventListener('change', () => {
       this.indexFile = chooseIndex.files?.[0] ?? null
     })
-    panel.append(this.field('特征索引（可选）', chooseIndex,
-      '支持标准 RVC 的 L2 IndexIVFFlat .index；导入后运行时不依赖 FAISS。'))
+    panel.append(this.field('特征索引（可选）', chooseIndex))
 
     this.importButton = document.createElement('button')
     this.importButton.className = 'button button--small'
@@ -681,10 +680,10 @@ class RvcSettings extends HTMLElement {
     if (!this.file) {
       this.checkpointInput.setAttribute('aria-invalid', 'true')
       this.checkpointInput.focus()
-      return this.say('请选择 RVC 推理模型（.pth）。', true)
+      return this.say('请选择 .pth 模型。', true)
     }
     this.importButton.disabled = true
-    this.say(this.indexFile ? '正在上传 checkpoint 与特征索引…' : '正在上传 checkpoint…')
+    this.say(this.indexFile ? '正在上传模型与索引…' : '正在上传模型…')
     try {
       const query = new URLSearchParams({ name: this.nameInput.value.trim() })
       const form = new FormData()
@@ -752,7 +751,7 @@ class RvcSettings extends HTMLElement {
 
     this.modelsBox.replaceChildren(text('h3', '已导入模型', 'perf__heading'))
     const models = this.state?.models ?? []
-    if (!models.length) this.modelsBox.append(text('p', '尚未导入模型。', 'hint'))
+    if (!models.length) this.modelsBox.append(text('p', '无模型', 'hint'))
     for (const model of models) {
       const card = document.createElement('div')
       card.className = 'extcard'
@@ -769,13 +768,13 @@ class RvcSettings extends HTMLElement {
       use.textContent = '设为默认'
       use.addEventListener('click', () => {
         this.defaultModel.value = model.path
-        this.say('已填入默认模型；点击“保存并重启引擎”后生效。')
+        this.say('已填入；保存后生效。')
       })
       const remove = document.createElement('button')
       remove.className = 'button button--small'
       remove.textContent = '删除'
       remove.addEventListener('click', async () => {
-        if (!confirm(`删除模型 ${model.name}？`)) return
+        if (!confirm(`删除“${model.name}”？`)) return
         try {
           this.state = await jsonResponse(await fetch(`/api/rvc/models/${encodeURIComponent(model.key)}`, { method: 'DELETE' }))
           this.renderState()
@@ -785,8 +784,8 @@ class RvcSettings extends HTMLElement {
       card.append(head, path, actions)
       this.modelsBox.append(card)
     }
-    if (!this.state?.available) this.say(this.state?.error || '内置转换器不可用。', true)
-    else if (job?.state === 'ready') this.say('转换完成，可以设为默认模型。')
+    if (!this.state?.available) this.say(this.state?.error || '转换器不可用。', true)
+    else if (job?.state === 'ready') this.say('转换完成。')
     else if (job?.state === 'failed') this.say(job.error || '转换失败。', true)
   }
 }
@@ -816,12 +815,12 @@ AVC_PLUGIN_MAIN(plugin)
         g_default_model = plugin.dataDir() + "/models/default.avcrvc";
     }
     plugin.author("avc")
-        .describe("Native RVC inference through ONNX Runtime with a bundled offline PTH importer.")
+        .describe("RVC inference with offline PTH import.")
         .pathSetting("default_model", g_default_model, "Default model",
-                     "Server-side .avcrvc model package used when a node path is empty.")
+                      "Used when a node model path is empty.")
         .enumSetting("provider", {"auto", "cpu", "cuda"}, "auto", "Execution provider",
-                     "Auto tries CUDA in a CUDA build and falls back to CPU.")
-        .intSetting("cuda_device", 0, 0, 15, "CUDA device", "CUDA device index.")
+                      "Auto prefers CUDA, then CPU.")
+        .intSetting("cuda_device", 0, 0, 15, "CUDA device")
         .onConfigure(&configure)
         .uiAsset("ui/main.js", kEditorModule, "text/javascript; charset=utf-8")
         .uiEntry("ui/main.js");
@@ -834,7 +833,7 @@ AVC_PLUGIN_MAIN(plugin)
             .floatParam("wet", 0.0F, 1.0F, 1.0F)
             .floatParam("speaker", 0.0F, 255.0F, 0.0F)
             .floatParam("index_rate", 0.0F, 1.0F, 0.75F)
-            .pathParam("model_path", {}, "Server-side .avcrvc model package; empty uses the extension default.")
+            .pathParam("model_path", {}, "Empty uses the extension default.")
             .notRealtimeSafe()
             .recommendedColdBlock(24000));
 }

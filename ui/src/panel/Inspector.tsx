@@ -162,12 +162,16 @@ function TargetControl({
   nodeType,
   value,
   onChange,
+  onEditStart,
+  onEditEnd,
 }: {
   param: ParamDescriptor
   extensionId: string
   nodeType: string
   value: string
   onChange: (v: string) => void
+  onEditStart: () => void
+  onEditEnd: () => void
 }) {
   const { t } = useTranslation()
   const hint = paramHint(t, extensionId, nodeType, param)
@@ -183,6 +187,8 @@ function TargetControl({
           placeholder={t(path ? 'inspector.pathPlaceholder' : 'inspector.publishPlaceholder')}
           spellCheck={false}
           autoCapitalize="none"
+          onFocus={onEditStart}
+          onBlur={onEditEnd}
           onChange={(e) => onChange(e.target.value)}
         />
         {hint && <span className="hint">{hint}</span>}
@@ -217,6 +223,8 @@ function DomainControl({
   const setDomain = useStore((s) => s.setDomain)
   const renameDomain = useStore((s) => s.renameDomain)
   const setDomainSetting = useStore((s) => s.setDomainSetting)
+  const beginHistoryGroup = useStore((s) => s.beginHistoryGroup)
+  const endHistoryGroup = useStore((s) => s.endHistoryGroup)
   const domains = useStore((s) => s.domains)
   const domainNodeCount = useStore((s) =>
     domain ? s.nodes.filter((node) => node.data.domain === domain).length : 0,
@@ -412,9 +420,12 @@ function DomainControl({
               max={8}
               step={1}
               value={safety}
+              onPointerDown={beginHistoryGroup}
+              onPointerUp={endHistoryGroup}
+              onKeyDown={beginHistoryGroup}
+              onKeyUp={endHistoryGroup}
               onChange={(e) => setDomainSetting(domain ?? COLD, 'safety', Number(e.target.value))}
             />
-            <span className="hint">{t('inspector.coldSafetyHint')}</span>
           </label>
           <span className="hint hint--strong">
             {t('inspector.coldCost', { ms: addedMs.toFixed(1) })}
@@ -468,6 +479,8 @@ export function Inspector() {
   const setParam = useStore((s) => s.setParam)
   const setPortCount = useStore((s) => s.setPortCount)
   const setOption = useStore((s) => s.setOption)
+  const beginHistoryGroup = useStore((s) => s.beginHistoryGroup)
+  const endHistoryGroup = useStore((s) => s.endHistoryGroup)
   const { t } = useTranslation()
   const extensionContext = useExtensionContext(extension, node)
 
@@ -532,6 +545,8 @@ export function Inspector() {
             nodeType={node.data.type}
             value={node.data.options[param.name] ?? ''}
             onChange={(v) => setOption(node.id, param.name, v)}
+            onEditStart={beginHistoryGroup}
+            onEditEnd={endHistoryGroup}
           />
         ) : (
           <ParamControl
@@ -558,6 +573,10 @@ export function Inspector() {
             max={16}
             step={1}
             value={counts.inputs}
+            onPointerDown={beginHistoryGroup}
+            onPointerUp={endHistoryGroup}
+            onKeyDown={beginHistoryGroup}
+            onKeyUp={endHistoryGroup}
             onChange={(e) => setPortCount(node.id, 'inputs', Number(e.target.value))}
           />
         </label>
@@ -575,6 +594,10 @@ export function Inspector() {
             max={16}
             step={1}
             value={counts.outputs}
+            onPointerDown={beginHistoryGroup}
+            onPointerUp={endHistoryGroup}
+            onKeyDown={beginHistoryGroup}
+            onKeyUp={endHistoryGroup}
             onChange={(e) => setPortCount(node.id, 'outputs', Number(e.target.value))}
           />
         </label>

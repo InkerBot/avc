@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { api, type AudioDevice, type UsbIpDriverStatus } from '../api'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 
 function group(devices: AudioDevice[], t: TFunction) {
   const label = (d: AudioDevice) =>
@@ -32,6 +33,7 @@ export function AudioDevices() {
   const [usbIp, setUsbIp] = useState<UsbIpDriverStatus | null>(null)
   const [driverBusy, setDriverBusy] = useState(false)
   const [driverError, setDriverError] = useState<string | null>(null)
+  const [confirmInstall, setConfirmInstall] = useState(false)
   const { t } = useTranslation()
 
   useEffect(() => {
@@ -43,7 +45,7 @@ export function AudioDevices() {
   }, [])
 
   const installDriver = async () => {
-    if (!window.confirm(t('devices.usbipInstallConfirm'))) return
+    setConfirmInstall(false)
     setDriverBusy(true)
     setDriverError(null)
     try {
@@ -65,6 +67,7 @@ export function AudioDevices() {
         : t('devices.usbipMissing')
 
   return (
+    <>
     <div className="panel">
       <h2 className="panel__title">{t('devices.title')}</h2>
       {group(devices, t)
@@ -95,7 +98,7 @@ export function AudioDevices() {
               <button
                 className="button button--small"
                 disabled={driverBusy}
-                onClick={() => void installDriver()}
+                onClick={() => setConfirmInstall(true)}
               >
                 {driverBusy
                   ? t('devices.usbipInstalling')
@@ -114,5 +117,16 @@ export function AudioDevices() {
         </section>
       )}
     </div>
+    <ConfirmDialog
+      open={confirmInstall}
+      title={t('devices.usbipInstallConfirmTitle')}
+      confirmLabel={t('app.continue')}
+      cancelLabel={t('app.cancel')}
+      onConfirm={() => void installDriver()}
+      onCancel={() => setConfirmInstall(false)}
+    >
+      <p>{t('devices.usbipInstallConfirm')}</p>
+    </ConfirmDialog>
+    </>
   )
 }

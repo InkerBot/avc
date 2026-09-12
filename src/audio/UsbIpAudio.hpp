@@ -25,7 +25,7 @@ struct UsbIpDriverStatus {
 // after a failed driver installation. The bundled installer is available only
 // in Windows x64 builds configured with AVC_BUNDLE_USBIP_DRIVER_INSTALLER.
 UsbIpDriverStatus queryUsbIpDriverStatus();
-bool installBundledUsbIpDriver(std::string &error);
+bool installBundledUsbIpDriver(std::string &error, void *owner_window = nullptr);
 
 class UsbIpAudioDevice {
 public:

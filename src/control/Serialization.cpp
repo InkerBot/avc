@@ -323,6 +323,14 @@ nlohmann::json telemetryJson(const audio::BackendStats &backend, const graph::Gr
     const double block_ms = budget_ns / 1e6;
     const double graph_ms =
         rate > 0 ? 1000.0 * static_cast<double>(graph.latency_frames) / rate : 0.0;
+    const double fallback_io_ms = block_ms * 2.0;
+    const double capture_ms = backend.io_latency_known && rate > 0
+                                  ? 1000.0 * backend.input_latency_frames / rate
+                                  : block_ms;
+    const double playback_ms = backend.io_latency_known && rate > 0
+                                   ? 1000.0 * backend.output_latency_frames / rate
+                                   : block_ms;
+    const double io_ms = backend.io_latency_known ? capture_ms + playback_ms : fallback_io_ms;
 
     return json{
         {"cycles", backend.cycles},
@@ -332,8 +340,11 @@ nlohmann::json telemetryJson(const audio::BackendStats &backend, const graph::Gr
         {"blockMs", block_ms},
         {"graphLatencyFrames", graph.latency_frames},
         {"graphLatencyMs", graph_ms},
-        {"ioLatencyMs", block_ms * 2.0},
-        {"totalLatencyMs", block_ms * 2.0 + graph_ms},
+        {"ioLatencyMs", io_ms},
+        {"captureLatencyMs", capture_ms},
+        {"playbackLatencyMs", playback_ms},
+        {"totalLatencyMs", io_ms + graph_ms},
+        {"clockSource", backend.device_driven ? "device" : "timer"},
         {"jitterUs", static_cast<double>(backend.wakeup_jitter_ns_max) / 1000.0},
         {"dspUs", static_cast<double>(backend.process_ns_max) / 1000.0},
         {"dspUsLast", static_cast<double>(backend.process_ns_last) / 1000.0},

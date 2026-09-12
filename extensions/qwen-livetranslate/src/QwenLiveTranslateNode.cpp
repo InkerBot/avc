@@ -857,7 +857,7 @@ class QwenLiveTranslateSettings extends HTMLElement {
     const values = context.settings.get()
     const panel = document.createElement('section')
     panel.className = 'panel'
-    panel.append(text('h2', 'Qwen 语音设置', 'panel__title'))
+    panel.append(text('h2', 'Qwen', 'panel__title'))
 
     const field = (labelText, input, hint = '') => {
       const label = document.createElement('label')
@@ -873,8 +873,7 @@ class QwenLiveTranslateSettings extends HTMLElement {
     this.apiKey.spellcheck = false
     this.apiKey.value = values.api_key ?? ''
     this.apiKey.placeholder = 'sk-...'
-    panel.append(field('API Key', this.apiKey,
-      '保存在 AVC 扩展配置文件中。界面会隐藏字符，但配置文件内容是明文。'))
+    panel.append(field('API Key', this.apiKey, '配置文件中明文保存。'))
 
     const reveal = document.createElement('label')
     reveal.className = 'field--check'
@@ -894,50 +893,44 @@ class QwenLiveTranslateSettings extends HTMLElement {
       item.selected = option === (values.region ?? 'cn-beijing')
       this.region.append(item)
     }
-    panel.append(field('服务地域', this.region, 'API Key、Workspace ID 与地域必须匹配。'))
+    panel.append(field('服务地域', this.region, '需与 API Key 和 Workspace ID 匹配。'))
 
     this.workspaceId = document.createElement('input')
     this.workspaceId.value = values.workspace_id ?? ''
     this.workspaceId.spellcheck = false
-    panel.append(field('业务空间 ID', this.workspaceId,
-      '建议填写百炼 Workspace ID；留空时使用兼容域名。'))
+    panel.append(field('业务空间 ID', this.workspaceId, '留空使用兼容域名。'))
 
     this.endpoint = document.createElement('input')
     this.endpoint.value = values.endpoint ?? ''
     this.endpoint.spellcheck = false
-    this.endpoint.placeholder = '可选 wss://...aliyuncs.com/...'
-    panel.append(field('同声传译 WSS 地址覆盖', this.endpoint,
-      '可选；为避免密钥外发，只接受 aliyuncs.com 下的 wss:// 地址。'))
+    this.endpoint.placeholder = '自动'
+    panel.append(field('传译 WSS', this.endpoint, '仅限 wss://*.aliyuncs.com/…'))
 
     this.model = document.createElement('input')
     this.model.value = values.model ?? 'qwen3.5-livetranslate-flash-realtime'
     this.model.spellcheck = false
-    panel.append(field('同声传译模型', this.model, '推荐保持稳定版模型名称。'))
+    panel.append(field('传译模型', this.model))
 
     this.defaultVoice = document.createElement('input')
     this.defaultVoice.value = values.default_voice ?? 'Tina'
-    panel.append(field('默认音色', this.defaultVoice,
-      '节点 voice 留空时使用；Qwen3.5 默认音色为 Tina。'))
+    panel.append(field('默认音色', this.defaultVoice, '节点留空时使用。'))
 
     this.asrEndpoint = document.createElement('input')
     this.asrEndpoint.value = values.asr_endpoint ?? ''
     this.asrEndpoint.spellcheck = false
-    this.asrEndpoint.placeholder = '可选 wss://...aliyuncs.com/...'
-    panel.append(field('语音识别 WSS 地址覆盖', this.asrEndpoint,
-      '可选；留空时根据地域与业务空间自动生成。'))
+    this.asrEndpoint.placeholder = '自动'
+    panel.append(field('语音识别 WSS', this.asrEndpoint, '仅限 wss://*.aliyuncs.com/…'))
 
     this.asrModel = document.createElement('input')
     this.asrModel.value = values.asr_model ?? 'qwen3-asr-flash-realtime'
     this.asrModel.spellcheck = false
-    panel.append(field('语音识别模型', this.asrModel,
-      '默认使用 qwen3-asr-flash-realtime。'))
+    panel.append(field('语音识别模型', this.asrModel))
 
     this.ttsEndpoint = document.createElement('input')
     this.ttsEndpoint.value = values.tts_endpoint ?? ''
     this.ttsEndpoint.spellcheck = false
-    this.ttsEndpoint.placeholder = '可选 wss://...aliyuncs.com/...'
-    panel.append(field('语音合成 WSS 地址覆盖', this.ttsEndpoint,
-      '可选；留空时根据地域与业务空间自动生成。'))
+    this.ttsEndpoint.placeholder = '自动'
+    panel.append(field('语音合成 WSS', this.ttsEndpoint, '仅限 wss://*.aliyuncs.com/…'))
 
     this.ttsModel = document.createElement('input')
     this.ttsModel.value = values.tts_model ?? 'qwen3-tts-flash-realtime'
@@ -947,15 +940,14 @@ class QwenLiveTranslateSettings extends HTMLElement {
 
     this.defaultTtsVoice = document.createElement('input')
     this.defaultTtsVoice.value = values.default_tts_voice ?? 'Cherry'
-    panel.append(field('默认 TTS 音色', this.defaultTtsVoice,
-      '文本转语音节点 voice 留空时使用。'))
+    panel.append(field('默认 TTS 音色', this.defaultTtsVoice, '节点留空时使用。'))
 
     this.hotwords = document.createElement('textarea')
     this.hotwords.value = values.hotwords_json ?? ''
     this.hotwords.rows = 4
     this.hotwords.spellcheck = false
     this.hotwords.placeholder = '{"人工智能":"Artificial Intelligence"}'
-    panel.append(field('热词 JSON', this.hotwords, '可选的源词到译词映射。'))
+    panel.append(field('热词 JSON', this.hotwords))
 
     const save = document.createElement('button')
     save.className = 'button button--primary'
@@ -965,7 +957,7 @@ class QwenLiveTranslateSettings extends HTMLElement {
     save.addEventListener('click', async () => {
       save.disabled = true
       status.className = 'hint'
-      status.textContent = '正在保存…'
+      status.textContent = '保存中…'
       try {
         await context.settings.save({
           api_key: this.apiKey.value.trim(),
@@ -981,7 +973,7 @@ class QwenLiveTranslateSettings extends HTMLElement {
           tts_model: this.ttsModel.value.trim(),
           default_tts_voice: this.defaultTtsVoice.value.trim(),
         })
-        status.textContent = '已保存，正在重启引擎。'
+        status.textContent = '已保存，重启中…'
       } catch (error) {
         status.className = 'banner banner--error'
         status.textContent = error instanceof Error ? error.message : String(error)
@@ -1021,30 +1013,27 @@ AVC_PLUGIN_MAIN(plugin)
 
     g_curl_ready = curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK;
     plugin.author("avc")
-        .describe("Qwen 实时语音识别、语音合成与同声传译；连接设置由 AVC UI 管理。")
-        .textSetting("api_key", {}, "API Key",
-                     "由 AVC 设置界面写入扩展配置文件。")
+        .describe("Qwen 实时语音。")
+        .textSetting("api_key", {}, "API Key", "配置文件中明文保存。")
         .enumSetting("region", {"cn-beijing", "ap-southeast-1"}, g_config.region,
-                     "服务地域", "API Key 与地域必须匹配。")
+                     "服务地域", "需与 API Key 匹配。")
         .textSetting("workspace_id", g_config.workspace_id, "业务空间 ID",
-                     "留空时使用兼容域名；建议填写百炼 Workspace ID。")
+                     "留空使用兼容域名。")
         .textSetting("endpoint", g_config.endpoint, "WSS 地址覆盖",
-                     "可选，只接受 aliyuncs.com 下的 wss:// 地址。")
-        .textSetting("model", g_config.model, "模型", "推荐保持稳定版模型名称。")
+                     "仅限 wss://*.aliyuncs.com/…")
+        .textSetting("model", g_config.model, "模型")
         .textSetting("default_voice", g_config.default_voice, "默认音色",
-                     "节点 voice 留空时使用；Qwen3.5 默认音色为 Tina。")
+                     "节点留空时使用。")
         .textSetting("hotwords_json", g_config.hotwords_json, "热词 JSON",
-                     R"({"人工智能":"Artificial Intelligence"} 形式的映射。)")
+                     R"({"源词":"译词"})")
         .textSetting("asr_endpoint", g_config.asr_endpoint, "语音识别 WSS 地址覆盖",
-                     "可选，只接受 aliyuncs.com 下的 wss:// 地址。")
-        .textSetting("asr_model", g_config.asr_model, "语音识别模型",
-                     "默认 qwen3-asr-flash-realtime。")
+                     "仅限 wss://*.aliyuncs.com/…")
+        .textSetting("asr_model", g_config.asr_model, "语音识别模型")
         .textSetting("tts_endpoint", g_config.tts_endpoint, "语音合成 WSS 地址覆盖",
-                     "可选，只接受 aliyuncs.com 下的 wss:// 地址。")
-        .textSetting("tts_model", g_config.tts_model, "语音合成模型",
-                     "默认 qwen3-tts-flash-realtime。")
+                     "仅限 wss://*.aliyuncs.com/…")
+        .textSetting("tts_model", g_config.tts_model, "语音合成模型")
         .textSetting("default_tts_voice", g_config.default_tts_voice,
-                     "默认 TTS 音色", "文本转语音节点 voice 留空时使用。")
+                     "默认 TTS 音色", "节点留空时使用。")
         .onConfigure(&configure)
         .onShutdown(&shutdown)
         .preset("Qwen 同声传译（麦克风到扬声器）", kPreset)
@@ -1060,20 +1049,20 @@ AVC_PLUGIN_MAIN(plugin)
             .out("source_transcript", avc::sdk::kTextPortType)
             .boolParam("enabled", true, "关闭时原声直通。")
             .enumParam("target_language", avc::qwen::languages(), 1,
-                       "目标语种；仅文本语种会自动关闭音频输出。")
+                       "仅文本语种会关闭音频输出。")
             .enumParam("source_language", avc::qwen::sourceLanguages(), 0,
-                       "auto 自动检测源语种。")
+                       "auto = 自动检测。")
             .boolParam("audio_output", true, "同时生成 24 kHz 翻译语音。")
-            .boolParam("source_transcript", true, "输出源语言识别文本。")
+            .boolParam("source_transcript", true)
             .floatParam("vad_threshold", -1.0F, 1.0F, 0.2F, {}, AVC_CURVE_LINEAR,
-                        "服务端 VAD 灵敏度。")
+                         "VAD 灵敏度。")
             .floatParam("silence_duration_ms", 200.0F, 6000.0F, 1000.0F, "ms",
-                        AVC_CURVE_LINEAR, "判定一段语音结束所需的静音时长。")
+                         AVC_CURVE_LINEAR, "结束语段所需的静音。")
             .enumParam("voice_clone", {"off", "once", "always", "preset"}, 0,
                        "preset 需要在 voice 中填写已复刻音色 ID。")
             .floatParam("jitter_ms", 40.0F, 2000.0F, 240.0F, "ms", AVC_CURVE_LINEAR,
-                        "翻译音频开始播放前的网络抖动缓冲。")
-            .textParam("voice", {}, "预设音色或已复刻音色 ID；留空使用扩展默认值。"));
+                         "播放前的网络抖动缓冲。")
+            .textParam("voice", {}, "音色 ID；留空使用扩展默认值。"));
 
     avc::qwen::detail::registerSpeechNodes(plugin);
 }

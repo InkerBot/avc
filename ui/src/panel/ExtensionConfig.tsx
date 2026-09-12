@@ -186,7 +186,6 @@ function GenericExtensionConfig({ extension }: { extension?: Extension }) {
       >
         {t('extensions.save')}
       </button>
-      <p className="hint">{t('extensions.saveHint')}</p>
     </div>
   )
 }
