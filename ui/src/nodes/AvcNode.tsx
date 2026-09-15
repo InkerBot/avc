@@ -43,7 +43,13 @@ export function AvcNode({ id, data, selected }: NodeProps<AvcNodeType>) {
   const costUs = useStore((s) => s.telemetry?.nodeCost?.[id])
   const status = useStore((s) => s.telemetry?.nodeStatus?.[id])
   const scope = useStore((s) => s.scopes[id])
-  const text = useStore((s) => s.texts[id])
+  const text = useStore((s) => {
+    const conversation = s.texts[id]
+    if (!conversation) return ''
+    return [...conversation.history, ...(conversation.draft ? [conversation.draft] : [])]
+      .map((message) => message.text)
+      .join('\n')
+  })
   const scopeBandsHz = useStore((s) => s.telemetry?.scopeBandsHz)
   const coldMs = useStore((s) =>
     data.domain ? s.telemetry?.domains?.find((d) => d.name === data.domain)?.latencyMs : undefined,
